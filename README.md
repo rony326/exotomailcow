@@ -20,7 +20,6 @@ Architektur- und Designentscheidungen: siehe
    - `Mail.ReadWrite`
    - `Calendars.Read`
    - `Contacts.Read`
-   - `MailboxSettings.Read`
    - `User.Read.All`
 4. **Grant admin consent for `<tenant>`** klicken (erfordert Global-Admin-
    oder Privileged-Role-Admin-Rechte) — ohne diesen Schritt schlagen alle
