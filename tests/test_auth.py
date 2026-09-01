@@ -2,13 +2,14 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 from app.db.models import Base, TenantConfig
 from app.security.auth import bootstrap_admin_from_env, hash_password, require_admin, verify_password
 
 
 def _session() -> Session:
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     return Session(engine)
 
