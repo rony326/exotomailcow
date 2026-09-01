@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.models import Base, ItemCategory, JobStatus, JobType, MailboxMapping, MigrationJob, TenantConfig
+from app.db.models import Base, ItemCategory, JobStatus, JobType, MailboxMapping, MigrationItem, MigrationJob, TenantConfig
 from app.graph.models import GraphCalendar, GraphContact, GraphEvent, GraphFolder, GraphMessageRef
 from app.importers.base import MailcowTarget
 from app.jobs.runner import JobCancelledError, MigrationJobRunner
@@ -707,6 +707,134 @@ def test_run_marks_job_failed_when_graph_client_factory_raises_before_dispatch()
 
     with pytest.raises(RuntimeError):
         runner.run(job_id)
+
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    assert reloaded.status == JobStatus.FAILED.value
+    assert reloaded.finished_at is not None
+
+
+def test_run_marks_job_failed_when_tenant_config_missing():
+    # Regression test for fix-round-2 finding #1: before this fix, the
+    # `mapping = db.get(...)` / `tenant_config = db.query(TenantConfig).one()`
+    # lookups happened *before* the try block (only `job = db.get(...)` plus
+    # the RUNNING transition were meant to stay outside it). A NoResultFound
+    # from `.one()` (e.g. no tenant configured yet) therefore escaped both
+    # the except and the finally, leaving the job stuck at RUNNING forever --
+    # the same zombie-job bug as the graph_client_factory case, just
+    # triggered one step earlier. No TenantConfig row is created here.
+    session_factory = _make_session_factory()
+    db = session_factory()
+    mapping, job = _mapping_and_job(db, status=JobStatus.PENDING.value)
+    job.migrate_mail, job.migrate_calendar, job.migrate_contacts = True, False, False
+    db.commit()
+    job_id = job.id
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=lambda tc: FakeGraphClient([], {}, {}),
+        mail_importer_factory=FakeMailImporter,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+
+    import pytest
+    from sqlalchemy.exc import NoResultFound
+
+    with pytest.raises(NoResultFound):
+        runner.run(job_id)
+
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    assert reloaded.status == JobStatus.FAILED.value
+    assert reloaded.finished_at is not None
+
+
+def test_run_resync_commit_failure_is_recovered_via_rollback():
+    # Regression test for fix-round-2 finding #2: if the resync-date
+    # `db.commit()` (inside the try block) raises with a genuine
+    # SQLAlchemy/DBAPI-level failure, the session's transaction is left in a
+    # state that requires an explicit rollback() before it can be used
+    # again. Without that rollback, the finally block's `db.commit()` --
+    # meant to persist `job.status = FAILED` / `finished_at` -- itself
+    # raises PendingRollbackError, masking the real failure and losing the
+    # FAILED status write (the job would appear stuck at RUNNING to any
+    # caller).
+    #
+    # A Python-level exception raised directly from a `before_flush` event
+    # does NOT reproduce this (verified separately: SQLAlchemy only enters
+    # the "must rollback before reuse" state after a real backend/DBAPI
+    # error during flush, not an arbitrary exception from an event hook).
+    # So this test injects a genuine UNIQUE-constraint violation into the
+    # *same* flush that persists `job.mail_since_date`, by adding two
+    # conflicting MigrationItem rows to the session from inside the
+    # `before_flush` hook once it sees the job in its "about to commit the
+    # resync date" state -- SQLAlchemy folds newly-added objects into the
+    # flush already in progress, so this really is the same commit() call,
+    # and the resulting IntegrityError really does leave the session broken
+    # until rollback() is called.
+    from sqlalchemy import event
+
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping = MailboxMapping(
+        exo_upn="a@b", mailcow_address="a@c", app_password_encrypted=encrypt("app-password-plaintext"),
+        last_synced_at=datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    db.add(mapping)
+    db.commit()
+    job = MigrationJob(mapping_id=mapping.id, job_type=JobType.RESYNC.value, status=JobStatus.PENDING.value,
+                        migrate_mail=True, migrate_calendar=False, migrate_contacts=False)
+    db.add(job)
+    db.commit()
+    job_id = job.id
+    mapping_id = mapping.id
+
+    triggered = {"done": False}
+
+    def _inject_conflict_on_resync_date_flush(session, flush_context, instances):
+        if triggered["done"]:
+            return
+        for obj in list(session.dirty):
+            if (
+                isinstance(obj, MigrationJob)
+                and obj.id == job_id
+                and obj.status == JobStatus.RUNNING.value
+                and obj.mail_since_date is not None
+            ):
+                triggered["done"] = True
+                # Two rows with the same (mapping_id, category, external_id)
+                # violate MigrationItem's uq_migration_item constraint.
+                session.add(MigrationItem(mapping_id=mapping_id, category=ItemCategory.MAIL.value, external_id="dupe-conflict"))
+                session.add(MigrationItem(mapping_id=mapping_id, category=ItemCategory.MAIL.value, external_id="dupe-conflict"))
+                break
+
+    event.listen(session_factory, "before_flush", _inject_conflict_on_resync_date_flush)
+    try:
+        runner = MigrationJobRunner(
+            db_session_factory=session_factory,
+            graph_client_factory=lambda tc: FakeGraphClient([], {}, {}),
+            mail_importer_factory=FakeMailImporter,
+            calendar_importer_factory=lambda: None,
+            contact_importer_factory=lambda: None,
+            imap_host="mail.example.org",
+            dav_base_url="https://mail.example.org",
+        )
+
+        import pytest
+        from sqlalchemy.exc import IntegrityError
+
+        with pytest.raises(IntegrityError):
+            runner.run(job_id)
+    finally:
+        event.remove(session_factory, "before_flush", _inject_conflict_on_resync_date_flush)
+
+    # Sanity check the injected conflict actually fired -- otherwise this
+    # test would pass vacuously without exercising the target code path.
+    assert triggered["done"] is True
 
     db.expire_all()
     reloaded = db.get(MigrationJob, job_id)

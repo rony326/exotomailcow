@@ -189,14 +189,15 @@ class MigrationJobRunner:
         db = self._db_session_factory()
         try:
             job = db.get(MigrationJob, job_id)
-            mapping = db.get(MailboxMapping, job.mapping_id)
-            tenant_config = db.query(TenantConfig).one()
 
             job.status = JobStatus.RUNNING.value
             job.started_at = datetime.now(timezone.utc)
             db.commit()
 
             try:
+                mapping = db.get(MailboxMapping, job.mapping_id)
+                tenant_config = db.query(TenantConfig).one()
+
                 modified_since = None
                 if job.job_type == JobType.RESYNC.value and mapping.last_synced_at is not None:
                     modified_since = mapping.last_synced_at - RESYNC_BUFFER
@@ -225,6 +226,7 @@ class MigrationJobRunner:
             except JobCancelledError:
                 pass
             except Exception:
+                db.rollback()
                 job.status = JobStatus.FAILED.value
                 raise
             finally:
