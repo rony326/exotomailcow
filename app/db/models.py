@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Base(DeclarativeBase):
@@ -44,7 +48,7 @@ class TenantConfig(Base):
     client_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     admin_user: Mapped[str] = mapped_column(String(255))
     admin_password_hash: Mapped[str] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class MailboxMapping(Base):
@@ -55,7 +59,7 @@ class MailboxMapping(Base):
     mailcow_address: Mapped[str] = mapped_column(String(255))
     app_password_encrypted: Mapped[str] = mapped_column(Text)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class MigrationJob(Base):
@@ -74,7 +78,7 @@ class MigrationJob(Base):
     count_updated: Mapped[int] = mapped_column(Integer, default=0)
     count_skipped: Mapped[int] = mapped_column(Integer, default=0)
     count_failed: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -94,7 +98,7 @@ class MigrationItem(Base):
     status: Mapped[str] = mapped_column(String(20), default=ItemStatus.DONE.value)
     target_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class MailFolderMap(Base):
