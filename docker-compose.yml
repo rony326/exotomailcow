@@ -1,0 +1,19 @@
+services:
+  exotomailcow:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - ADMIN_USER=${ADMIN_USER}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - MAILCOW_DAV_BASE_URL=${MAILCOW_DAV_BASE_URL}
+      - MAILCOW_IMAP_HOST=${MAILCOW_IMAP_HOST}
+      - MAILCOW_IMAP_PORT=${MAILCOW_IMAP_PORT:-993}
+      - CONCURRENCY=${CONCURRENCY:-4}
+      - DATABASE_URL=sqlite:////app/data/exotomailcow.db
+      - LOG_DIR=/app/data/logs
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
