@@ -1,3 +1,6 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -7,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Base, JobStatus, MailboxMapping, MigrationJob
 from app.db.session import get_db
 from app.security.auth import require_admin
+from app.web import scheduler_dep
 from app.web.routes import jobs
 from app.web.scheduler_dep import get_scheduler
 
@@ -105,3 +109,62 @@ def test_cancel_job_calls_scheduler_cancel():
 
     assert response.status_code == 200
     assert fake_scheduler.cancelled == [job.id]
+
+
+def test_job_progress_returns_404_for_missing_job():
+    app, db, mapping, fake_scheduler = _app_and_db()
+    client = TestClient(app)
+
+    response = client.get("/jobs/99999")
+
+    assert response.status_code == 404
+
+
+def test_cancel_job_returns_404_for_missing_job_and_does_not_call_scheduler():
+    app, db, mapping, fake_scheduler = _app_and_db()
+    client = TestClient(app)
+
+    response = client.post("/jobs/99999/cancel")
+
+    assert response.status_code == 404
+    assert fake_scheduler.cancelled == []
+
+
+def test_get_scheduler_returns_the_same_instance_under_concurrent_first_access():
+    """Regression test: get_scheduler() must not construct two Scheduler
+    instances (each owning its own ThreadPoolExecutor) when multiple
+    threads race through the check-then-set on the very first call.
+
+    A threading.Barrier forces every worker thread to reach get_scheduler()
+    at (as close to) the same instant as possible, maximizing the chance of
+    hitting the race window that existed before the double-checked-locking
+    fix. The assertion (single object identity across all callers) is
+    deterministic regardless of whether the race window is actually hit on
+    a given run, since correct locking guarantees exactly one instance is
+    ever built -- so this cannot flake.
+    """
+    # Reset the process-wide singleton so this test observes first-access behavior.
+    original_scheduler = scheduler_dep._scheduler
+    scheduler_dep._scheduler = None
+    results: list = []
+    try:
+        thread_count = 16
+        barrier = threading.Barrier(thread_count)
+
+        def call_get_scheduler():
+            barrier.wait(timeout=5)
+            return scheduler_dep.get_scheduler()
+
+        with ThreadPoolExecutor(max_workers=thread_count) as executor:
+            futures = [executor.submit(call_get_scheduler) for _ in range(thread_count)]
+            results = [future.result(timeout=5) for future in futures]
+
+        first = results[0]
+        assert all(result is first for result in results)
+    finally:
+        # Tear down whatever Scheduler instance(s) got built during this test
+        # (should be exactly one) so their ThreadPoolExecutor threads don't
+        # leak into the rest of the test run, then restore the module global.
+        for built_scheduler in {id(r): r for r in results}.values():
+            built_scheduler.shutdown(wait=True)
+        scheduler_dep._scheduler = original_scheduler

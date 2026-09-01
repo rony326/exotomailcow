@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -51,6 +51,8 @@ def create_jobs(
 @router.get("/jobs/{job_id}", response_class=HTMLResponse)
 def job_progress(request: Request, job_id: int, db: Session = Depends(get_db), _: str = Depends(require_admin)):
     job = db.get(MigrationJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
     return templates.TemplateResponse(request, "_job_progress.html", {"job": job})
 
 
@@ -62,6 +64,8 @@ def cancel_job(
     scheduler=Depends(get_scheduler),
     _: str = Depends(require_admin),
 ):
-    scheduler.cancel(job_id)
     job = db.get(MigrationJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    scheduler.cancel(job_id)
     return templates.TemplateResponse(request, "_job_progress.html", {"job": job})

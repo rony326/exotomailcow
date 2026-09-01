@@ -1,3 +1,5 @@
+import threading
+
 from app.config import get_settings
 from app.db.models import TenantConfig
 from app.db.session import SessionLocal
@@ -10,6 +12,7 @@ from app.jobs.scheduler import Scheduler
 from app.security.crypto import decrypt
 
 _scheduler: Scheduler | None = None
+_scheduler_lock = threading.Lock()
 
 
 def _graph_client_factory(tenant_config: TenantConfig) -> GraphClient:
@@ -34,5 +37,7 @@ def build_scheduler() -> Scheduler:
 def get_scheduler() -> Scheduler:
     global _scheduler
     if _scheduler is None:
-        _scheduler = build_scheduler()
+        with _scheduler_lock:
+            if _scheduler is None:
+                _scheduler = build_scheduler()
     return _scheduler
