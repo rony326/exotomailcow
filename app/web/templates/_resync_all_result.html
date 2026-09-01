@@ -1,0 +1,6 @@
+<p>{{ jobs|length }} Resync-Job(s) gestartet.</p>
+<ul>
+{% for job in jobs %}
+  <li><a href="/jobs/{{ job.id }}">Job #{{ job.id }} (Mapping {{ job.mapping_id }})</a></li>
+{% endfor %}
+</ul>
