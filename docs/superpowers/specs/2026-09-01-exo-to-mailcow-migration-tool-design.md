@@ -120,7 +120,13 @@ migration_item        -- Idempotenz-Kern
   source_modified_at (nullable — Graph lastModifiedDateTime zum Zeitpunkt
                       des Imports; nur für calendar/contacts gepflegt,
                       Basis für Änderungserkennung bei Resync),
-  status            (done/skipped/failed),
+  status            (done/failed),          -- "skipped" ist kein Item-Status,
+                                              -- sondern ein Job-Lauf-Aggregat
+                                              -- (siehe migration_job.count_skipped):
+                                              -- ein bereits 'done' bzw. unverändertes
+                                              -- Item wird beim nächsten Lauf einfach
+                                              -- übersprungen, ohne dass sich sein
+                                              -- Status ändert.
   target_ref        (IMAP UID / CalDAV href / CardDAV href),
   error_message,
   updated_at
