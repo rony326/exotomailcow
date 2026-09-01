@@ -2,6 +2,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.conversion.ics import graph_event_to_ics
@@ -20,6 +21,31 @@ RETRY_BACKOFF_SECONDS = 2
 
 class JobCancelledError(Exception):
     pass
+
+
+def _commit_with_retry(db: Session) -> None:
+    """Commit with the same per-item retry/backoff as the surrounding item
+    processing.
+
+    This commit persists the job's running counters (count_created/
+    count_skipped/count_updated/count_failed) after each item and sits
+    outside the per-item try/except above (record_success/record_failure
+    already commit their own writes inside that try). Without this retry
+    wrapper, a single transient SQLite lock-contention error on this commit
+    would propagate all the way out of _migrate_mail/_migrate_calendar/
+    _migrate_contacts to run()'s exception handler and fail the entire
+    mailbox job over one item's commit contention, instead of being
+    retried like the rest of that item's processing.
+    """
+    for attempt in range(1, MAX_ITEM_RETRIES + 1):
+        try:
+            db.commit()
+            return
+        except Exception:
+            db.rollback()
+            if attempt == MAX_ITEM_RETRIES:
+                raise
+            time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
 
 class MigrationJobRunner:
@@ -107,7 +133,7 @@ class MigrationJobRunner:
                     else:
                         time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
-        db.commit()
+        _commit_with_retry(db)
 
     def _migrate_calendar(self, db: Session, job: MigrationJob, mapping: MailboxMapping, graph_client, target: MailcowTarget, modified_since) -> None:
         importer = self._calendar_importer_factory()
@@ -146,7 +172,7 @@ class MigrationJobRunner:
                     else:
                         time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
-        db.commit()
+        _commit_with_retry(db)
 
     def _migrate_contacts(self, db: Session, job: MigrationJob, mapping: MailboxMapping, graph_client, target: MailcowTarget, modified_since) -> None:
         importer = self._contact_importer_factory()
@@ -183,16 +209,28 @@ class MigrationJobRunner:
                     else:
                         time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
-        db.commit()
+        _commit_with_retry(db)
 
     def run(self, job_id: int) -> None:
         db = self._db_session_factory()
         try:
             job = db.get(MigrationJob, job_id)
 
-            job.status = JobStatus.RUNNING.value
-            job.started_at = datetime.now(timezone.utc)
+            # Guarded START transition: only move PENDING -> RUNNING. If
+            # Scheduler.cancel() already flipped this job to CANCELLED while
+            # it was sitting in the thread pool's queue, this UPDATE matches
+            # zero rows and we must not run any migration work at all.
+            start_result = db.execute(
+                update(MigrationJob)
+                .where(MigrationJob.id == job_id, MigrationJob.status == JobStatus.PENDING.value)
+                .values(status=JobStatus.RUNNING.value, started_at=datetime.now(timezone.utc))
+            )
             db.commit()
+            if start_result.rowcount == 0:
+                # Already cancelled (or otherwise not PENDING) before we
+                # could start -- nothing to do.
+                return
+            db.refresh(job)
 
             try:
                 mapping = db.get(MailboxMapping, job.mapping_id)
@@ -220,14 +258,27 @@ class MigrationJobRunner:
                     self._migrate_calendar(db, job, mapping, graph_client, target, modified_since)
                 if job.migrate_contacts:
                     self._migrate_contacts(db, job, mapping, graph_client, target, modified_since)
-                job.status = JobStatus.COMPLETED.value
                 if not job.dry_run:
                     mapping.last_synced_at = job.started_at
+                # Guarded TERMINAL write: only move RUNNING -> COMPLETED. If a
+                # concurrent Scheduler.cancel() already flipped this job to
+                # CANCELLED while we were finishing up, don't stomp on it.
+                db.execute(
+                    update(MigrationJob)
+                    .where(MigrationJob.id == job_id, MigrationJob.status == JobStatus.RUNNING.value)
+                    .values(status=JobStatus.COMPLETED.value)
+                )
             except JobCancelledError:
                 pass
             except Exception:
                 db.rollback()
-                job.status = JobStatus.FAILED.value
+                # Guarded TERMINAL write: only move RUNNING -> FAILED, for the
+                # same reason as the COMPLETED case above.
+                db.execute(
+                    update(MigrationJob)
+                    .where(MigrationJob.id == job_id, MigrationJob.status == JobStatus.RUNNING.value)
+                    .values(status=JobStatus.FAILED.value)
+                )
                 raise
             finally:
                 job.finished_at = datetime.now(timezone.utc)

@@ -875,3 +875,93 @@ def test_run_leaves_status_cancelled_when_job_was_cancelled_mid_run():
     reloaded = db.get(MigrationJob, job_id)
     assert reloaded.status == JobStatus.CANCELLED.value
     assert reloaded.finished_at is not None
+
+
+def test_run_does_nothing_when_job_already_cancelled_while_pending():
+    # Regression test for finding #1 (final whole-branch review): a job
+    # cancelled while still PENDING (queued in the thread pool, not yet
+    # started) must never transition to RUNNING/COMPLETED -- run() should
+    # bail out immediately without touching any importer.
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping, job = _mapping_and_job(db, status=JobStatus.PENDING.value)
+    job.migrate_mail, job.migrate_calendar, job.migrate_contacts = True, False, False
+    db.commit()
+    job_id = job.id
+
+    # Simulate Scheduler.cancel() reaching the job before the worker thread
+    # picks it up.
+    db.query(MigrationJob).filter_by(id=job_id).update({"status": JobStatus.CANCELLED.value})
+    db.commit()
+
+    importer_instances: list[FakeMailImporter] = []
+
+    def _tracking_mail_importer_factory():
+        importer = FakeMailImporter()
+        importer_instances.append(importer)
+        return importer
+
+    def _boom_graph_client_factory(tc):
+        raise AssertionError("graph client must not be constructed for an already-cancelled job")
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=_boom_graph_client_factory,
+        mail_importer_factory=_tracking_mail_importer_factory,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+    runner.run(job_id)
+
+    assert importer_instances == []
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    assert reloaded.status == JobStatus.CANCELLED.value
+    assert reloaded.started_at is None
+
+
+def test_run_terminal_write_does_not_overwrite_concurrent_cancellation():
+    # Regression test for finding #1 (final whole-branch review): if the job
+    # is cancelled concurrently (by another session/thread) after the last
+    # _migrate_* call has already returned normally (so no JobCancelledError
+    # is raised from within a migrate loop), the guarded terminal UPDATE must
+    # not overwrite the CANCELLED status with COMPLETED.
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping, job = _mapping_and_job(db, status=JobStatus.PENDING.value)
+    job.migrate_mail, job.migrate_calendar, job.migrate_contacts = True, False, False
+    db.commit()
+    job_id = job.id
+
+    # No folders at all -- _migrate_mail's cancellation check is never
+    # reached, so it returns normally without raising JobCancelledError.
+    graph_client = FakeGraphClient([], {}, {})
+
+    class CancellingOnConnectImporter(FakeMailImporter):
+        def connect(self, target):
+            # Simulate a concurrent Scheduler.cancel() call landing between
+            # the last migrate step finishing and run()'s terminal write.
+            db.query(MigrationJob).filter_by(id=job_id).update({"status": JobStatus.CANCELLED.value})
+            db.commit()
+            return "."
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=lambda tc: graph_client,
+        mail_importer_factory=CancellingOnConnectImporter,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+    runner.run(job_id)
+
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    assert reloaded.status == JobStatus.CANCELLED.value
+    assert reloaded.status != JobStatus.COMPLETED.value
+    assert reloaded.finished_at is not None
