@@ -138,6 +138,34 @@ def test_job_progress_endpoint_returns_current_counts():
     assert "1" in response.text
 
 
+def test_job_progress_shows_error_message_for_failed_job():
+    app, db, mapping, fake_scheduler = _app_and_db()
+    job = MigrationJob(
+        mapping_id=mapping.id,
+        status=JobStatus.FAILED.value,
+        error_message="b'[AUTHENTICATIONFAILED] Authentication failed.'",
+    )
+    db.add(job)
+    db.commit()
+
+    client = TestClient(app)
+    response = client.get(f"/jobs/{job.id}")
+
+    assert "AUTHENTICATIONFAILED" in response.text
+
+
+def test_job_progress_shows_no_error_block_for_running_job():
+    app, db, mapping, fake_scheduler = _app_and_db()
+    job = MigrationJob(mapping_id=mapping.id, status=JobStatus.RUNNING.value)
+    db.add(job)
+    db.commit()
+
+    client = TestClient(app)
+    response = client.get(f"/jobs/{job.id}")
+
+    assert "Fehler:" not in response.text
+
+
 def test_cancel_job_calls_scheduler_cancel():
     app, db, mapping, fake_scheduler = _app_and_db()
     job = MigrationJob(mapping_id=mapping.id, status=JobStatus.RUNNING.value)

@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
@@ -37,8 +37,34 @@ engine = _make_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
+# Columns added to the schema after a table already existed in deployed
+# databases. This project deliberately uses Base.metadata.create_all()
+# instead of Alembic (see README) — that call only creates missing
+# TABLES, it never adds a column to a table that already exists. Without
+# this, a deployed instance upgrading to a newer image would crash with
+# "no such column" the first time the new column is read or written.
+# List new (table, column, sql_type) tuples here as the schema grows.
+_ADDED_COLUMNS = [
+    ("migration_job", "error_message", "TEXT"),
+]
+
+
+def _apply_missing_columns(target_engine=None) -> None:
+    target_engine = target_engine if target_engine is not None else engine
+    inspector = inspect(target_engine)
+    existing_tables = set(inspector.get_table_names())
+    with target_engine.begin() as conn:
+        for table, column, sql_type in _ADDED_COLUMNS:
+            if table not in existing_tables:
+                continue  # a fresh install already gets it from create_all()
+            existing_columns = {col["name"] for col in inspector.get_columns(table)}
+            if column not in existing_columns:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    _apply_missing_columns(engine)
 
 
 def get_db() -> Iterator[Session]:

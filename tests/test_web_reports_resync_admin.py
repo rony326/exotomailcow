@@ -55,6 +55,21 @@ def test_report_json_lists_failed_items_and_counts():
     assert body["errors"][0]["error"] == "boom"
 
 
+def test_report_json_includes_job_level_error():
+    app, db, _ = _app_and_db()
+    mapping = MailboxMapping(exo_upn="a@b", mailcow_address="a@c", app_password_encrypted="enc")
+    db.add(mapping)
+    db.commit()
+    job = MigrationJob(mapping_id=mapping.id, error_message="IMAP AUTHENTICATIONFAILED")
+    db.add(job)
+    db.commit()
+
+    client = TestClient(app)
+    response = client.get(f"/jobs/{job.id}/report.json")
+
+    assert response.json()["job_error"] == "IMAP AUTHENTICATIONFAILED"
+
+
 def test_report_csv_contains_error_rows():
     app, db, _ = _app_and_db()
     mapping = MailboxMapping(exo_upn="a@b", mailcow_address="a@c", app_password_encrypted="enc")

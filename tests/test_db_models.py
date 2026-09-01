@@ -52,3 +52,18 @@ def test_migration_job_defaults():
     assert fetched.status == JobStatus.PENDING.value
     assert fetched.count_created == 0
     assert fetched.dry_run is False
+    assert fetched.error_message is None
+
+
+def test_migration_job_stores_error_message():
+    db = _session()
+    mapping = MailboxMapping(exo_upn="a@b", mailcow_address="a@c", app_password_encrypted="enc")
+    db.add(mapping)
+    db.commit()
+
+    job = MigrationJob(mapping_id=mapping.id, job_type=JobType.INITIAL.value, error_message="IMAP login failed")
+    db.add(job)
+    db.commit()
+
+    fetched = db.query(MigrationJob).one()
+    assert fetched.error_message == "IMAP login failed"

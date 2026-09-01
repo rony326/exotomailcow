@@ -35,6 +35,7 @@ def report_json(job_id: int, db: Session = Depends(get_db), _: str = Depends(req
     payload = {
         "job_id": job.id,
         "status": job.status,
+        "job_error": job.error_message,
         "count_created": job.count_created,
         "count_updated": job.count_updated,
         "count_skipped": job.count_skipped,
@@ -53,6 +54,8 @@ def report_csv(job_id: int, db: Session = Depends(get_db), _: str = Depends(requ
     failed = _failed_items(db, job)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
+    if job.error_message:
+        writer.writerow(["job", "", job.error_message])
     writer.writerow(["category", "external_id", "error"])
     for item in failed:
         writer.writerow([item.category, item.external_id, item.error_message])

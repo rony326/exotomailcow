@@ -10,6 +10,9 @@
     Übersprungen: {{ job.count_skipped }} |
     Fehlgeschlagen: {{ job.count_failed }}
   </p>
+  {% if job.status == "failed" and job.error_message %}
+  <p class="error">Fehler: {{ job.error_message }}</p>
+  {% endif %}
   {% if job.status in ("pending", "running") %}
   <button class="btn-secondary" hx-post="/jobs/{{ job.id }}/cancel" hx-target="#job-{{ job.id }}" hx-swap="outerHTML">Abbrechen</button>
   {% endif %}

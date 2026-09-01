@@ -99,6 +99,14 @@ hinzukamen oder sich änderten (siehe Spec §6a).
 Client-Secret und alle App-Passwörter aus der DB, sobald die Migration
 abgeschlossen ist. Migrations-Historie und Berichte bleiben erhalten.
 
+**Datenbank-Schema:** Es gibt bewusst kein Alembic — beim Start legt das
+Tool fehlende Tabellen automatisch an (`Base.metadata.create_all()`) und
+fügt einzelne neu hinzugekommene Spalten in bestehenden Tabellen per
+`ALTER TABLE` nach (siehe `app/db/session.py`). Ein `docker compose up
+--build` nach einem Update reicht daher aus, `data/exotomailcow.db`
+muss nicht gelöscht werden — bestehende Mappings und die
+Migrations-Historie bleiben erhalten.
+
 ## 5. Warum kein Exchange-ActiveSync-Adapter?
 
 IMAP/CalDAV/CardDAV sind die einzigen Ziel-Adapter. Gründe: die

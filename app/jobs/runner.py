@@ -270,14 +270,19 @@ class MigrationJobRunner:
                 )
             except JobCancelledError:
                 pass
-            except Exception:
+            except Exception as exc:
                 db.rollback()
                 # Guarded TERMINAL write: only move RUNNING -> FAILED, for the
-                # same reason as the COMPLETED case above.
+                # same reason as the COMPLETED case above. Also record the
+                # reason so an operator can see why without reading container
+                # logs (a job-level failure, e.g. a bad IMAP login before any
+                # item was even attempted, otherwise leaves no trace anywhere
+                # the GUI can show — migration_item.error_message only exists
+                # per-item, and none may have been created yet).
                 db.execute(
                     update(MigrationJob)
                     .where(MigrationJob.id == job_id, MigrationJob.status == JobStatus.RUNNING.value)
-                    .values(status=JobStatus.FAILED.value)
+                    .values(status=JobStatus.FAILED.value, error_message=str(exc)[:2000])
                 )
                 raise
             finally:

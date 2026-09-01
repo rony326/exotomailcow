@@ -712,6 +712,50 @@ def test_run_marks_job_failed_when_graph_client_factory_raises_before_dispatch()
     reloaded = db.get(MigrationJob, job_id)
     assert reloaded.status == JobStatus.FAILED.value
     assert reloaded.finished_at is not None
+    assert reloaded.error_message == "token acquisition failed"
+
+
+def test_run_stores_error_message_for_a_mid_migration_failure():
+    # A job-level failure (e.g. a real IMAP AUTHENTICATIONFAILED before any
+    # message was even attempted, seen against a live deployment) previously
+    # left no trace anywhere the GUI could show: migration_item.error_message
+    # only exists per item, and none may have been created yet. job.status
+    # correctly went to 'failed', but the operator had no way to see *why*
+    # without reading container logs.
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping, job = _mapping_and_job(db, status=JobStatus.PENDING.value)
+    job.migrate_mail, job.migrate_calendar, job.migrate_contacts = True, False, False
+    db.commit()
+    job_id = job.id
+
+    class FailingConnectImporter(FakeMailImporter):
+        def connect(self, target):
+            raise RuntimeError("b'[AUTHENTICATIONFAILED] Authentication failed.'")
+
+    folders = [GraphFolder(id="inbox", display_name="Inbox", parent_id=None, well_known_name="inbox", child_folder_count=0)]
+    graph_client = FakeGraphClient(folders, {}, {})
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=lambda tc: graph_client,
+        mail_importer_factory=FailingConnectImporter,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        runner.run(job_id)
+
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    assert reloaded.status == JobStatus.FAILED.value
+    assert "AUTHENTICATIONFAILED" in reloaded.error_message
 
 
 def test_run_marks_job_failed_when_tenant_config_missing():

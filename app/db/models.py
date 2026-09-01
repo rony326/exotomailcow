@@ -104,6 +104,7 @@ class MigrationJob(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class MigrationItem(Base):
