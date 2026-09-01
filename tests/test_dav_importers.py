@@ -31,11 +31,11 @@ def test_put_event_sends_correct_request():
     href = importer.put_event(_TARGET, "uid-1", b"BEGIN:VCALENDAR...")
 
     assert captured["method"] == "PUT"
-    assert captured["url"] == "https://mail.example.org/SOGo/dav/user@mailcow.local/Calendar/uid-1.ics"
+    assert captured["url"] == "https://mail.example.org/SOGo/dav/user@mailcow.local/Calendar/personal/uid-1.ics"
     assert captured["content_type"] == "text/calendar; charset=utf-8"
     expected_auth = "Basic " + base64.b64encode(b"user@mailcow.local:app-pass").decode()
     assert captured["auth"] == expected_auth
-    assert href == "https://mail.example.org/SOGo/dav/user@mailcow.local/Calendar/uid-1.ics"
+    assert href == "https://mail.example.org/SOGo/dav/user@mailcow.local/Calendar/personal/uid-1.ics"
 
 
 def test_put_event_raises_on_error_status():
@@ -61,6 +61,6 @@ def test_put_contact_sends_correct_request():
     importer = CardDavContactImporter(http_client=http_client)
     href = importer.put_contact(_TARGET, "c1", b"BEGIN:VCARD...")
 
-    assert captured["url"] == "https://mail.example.org/SOGo/dav/user@mailcow.local/Contacts/c1.vcf"
+    assert captured["url"] == "https://mail.example.org/SOGo/dav/user@mailcow.local/Contacts/personal/c1.vcf"
     assert captured["content_type"] == "text/vcard; charset=utf-8"
     assert href == captured["url"]

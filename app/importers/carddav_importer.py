@@ -8,7 +8,7 @@ class CardDavContactImporter:
         self._http = http_client or httpx.Client()
 
     def put_contact(self, target: MailcowTarget, uid: str, vcard_data: bytes) -> str:
-        url = f"{target.dav_base_url}/SOGo/dav/{target.address}/Contacts/{uid}.vcf"
+        url = f"{target.dav_base_url}/SOGo/dav/{target.address}/Contacts/personal/{uid}.vcf"
         response = self._http.put(
             url,
             content=vcard_data,

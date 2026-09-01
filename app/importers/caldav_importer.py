@@ -8,7 +8,7 @@ class CalDavCalendarImporter:
         self._http = http_client or httpx.Client()
 
     def put_event(self, target: MailcowTarget, uid: str, ics_data: bytes) -> str:
-        url = f"{target.dav_base_url}/SOGo/dav/{target.address}/Calendar/{uid}.ics"
+        url = f"{target.dav_base_url}/SOGo/dav/{target.address}/Calendar/personal/{uid}.ics"
         response = self._http.put(
             url,
             content=ics_data,

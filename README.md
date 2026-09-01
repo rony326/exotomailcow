@@ -45,7 +45,19 @@ abgelegt und nie im Klartext geloggt.
 - **SOGo-URL:** Mailcow bindet SOGo unter `https://<mailcow-host>/SOGo/`
   ein; `MAILCOW_DAV_BASE_URL` ist die Basis-URL ohne `/SOGo`-Suffix
   (z.B. `https://mail.example.org`), das Tool hängt
-  `/SOGo/dav/<adresse>/Calendar/` bzw. `/Contacts/` selbst an.
+  `/SOGo/dav/<adresse>/Calendar/personal/` bzw.
+  `/Contacts/personal/` selbst an (`personal` ist SOGos
+  Standard-Collection für den privaten Kalender/das private
+  Adressbuch eines Users).
+  **Achtung:** Dieses URL-Schema konnte während der Entwicklung nicht
+  gegen eine echte Mailcow/SOGo-Instanz verifiziert werden (kein
+  Testserver verfügbar). Das genaue Verhalten bzgl. Collection-Namen
+  kann je nach SOGo-Version/Konfiguration abweichen — vor einer
+  echten Migration unbedingt mit einem einzelnen Test-Postfach gegen
+  die tatsächliche Zielinstanz verifizieren (z.B. per manuellem
+  `curl -X PUT` gegen die o.g. URL, oder Beobachtung der Requests im
+  Dry-Run/ersten echten Lauf), bevor ein produktiver Massen-Import
+  gestartet wird.
 - **Ziel-Postfächer müssen vorher existieren** — das Tool legt keine
   Mailcow-Mailboxen an (bewusstes Nicht-Ziel, siehe Spec §2).
 
@@ -100,16 +112,38 @@ könnte. Graph deckt den Quell-Zugriff bereits vollständig ab.
 ```bash
 pip install -e ".[dev]"
 pytest                          # vollständige Unit-/Komponenten-Suite
-pytest tests/integration -v     # manuell, siehe unten
 ```
 
-### Integrationstest gegen ein einzelnes Test-Postfach
+### Kein Integrationstest gegen echte EXO/Mailcow-Server — aktueller Stand
 
-`tests/integration/test_single_mailbox_roundtrip.py` läuft nicht in CI
-(braucht echte Zugangsdaten) und ist standardmäßig übersprungen. Zum
-Ausführen: echtes EXO-Test-Postfach + Test-Mailcow-Postfach anlegen,
-Zugangsdaten als Umgebungsvariablen setzen (siehe Kopfkommentar der
-Testdatei), dann `pytest tests/integration -v -m integration` — deckt
-Mail-Rundlauf inkl. verschachtelter Ordner, Kalender-Rundlauf inkl.
-Serientermin, Kontakte-Rundlauf, Resume nach simuliertem Absturz und
-einen vollständigen Resync-Rundlauf ab (siehe Spec §12).
+Es existiert **noch kein** `tests/integration`-Verzeichnis und **keine**
+`integration`-Marker-Registrierung in `pyproject.toml`. Dieses Tool
+wurde bisher ausschließlich gegen Unit-/Komponenten-Tests mit
+gefälschten (Fake/Mock) Graph-, IMAP- und CalDAV/CardDAV-Clients
+verifiziert — **nicht** gegen eine echte Exchange-Online- oder
+Mailcow-Instanz. Das ist eine bewusste Scope-Grenze (siehe
+`docs/superpowers/plans/2026-09-01-exo-to-mailcow-migration-tool.md`,
+Abschnitt "Post-Plan Note"): ein solcher End-to-End-Test braucht echte
+EXO- und Mailcow-Testzugangsdaten, die während der Entwicklung nicht
+zur Verfügung standen, und ein Fake/Mock-Ersatz dafür wäre nicht
+aussagekräftig.
+
+Sobald echte Testzugangsdaten vorhanden sind, sollte ein Mensch
+`tests/integration/test_single_mailbox_roundtrip.py` von Hand nach
+Spec §12 schreiben (Wiederverwendung der bestehenden `GraphClient`,
+`ImapMailImporter`, `CalDavCalendarImporter`, `CardDavContactImporter`
+und `MigrationJobRunner` — keine neuen Schnittstellen nötig) und dabei
+mindestens folgende Szenarien abdecken:
+
+- Mail-Rundlauf inkl. verschachtelter Ordner
+- Kalender-Rundlauf inkl. Serientermin
+- Kontakte-Rundlauf
+- Resume nach simuliertem Absturz
+- ein vollständiger Resync-Rundlauf
+
+**Vor einer echten Migration eines Produktiv-Postfachs wird dringend
+empfohlen, das Tool zunächst manuell gegen ein einzelnes Test-Postfach
+zu verifizieren** (Mapping anlegen, Dry-Run, dann echten Lauf mit
+kleinem Postfach), auch ohne den oben beschriebenen automatisierten
+Integrationstest — insbesondere wegen des unter Punkt 2 genannten,
+nicht gegen einen echten SOGo-Server verifizierten DAV-URL-Schemas.
