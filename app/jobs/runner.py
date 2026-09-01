@@ -11,7 +11,7 @@ from app.db.models import ItemCategory, JobStatus, JobType, MailboxMapping, Migr
 from app.db.repositories import get_item, get_or_create_folder_map, mark_folder_created, needs_import, record_failure, record_success
 from app.graph.client import GraphClient
 from app.importers.base import CalendarImporter, ContactImporter, MailcowTarget, MailImporter
-from app.importers.folder_mapping import build_folder_paths, build_imap_path
+from app.importers.folder_mapping import build_folder_paths, build_imap_paths
 from app.jobs.resync import RESYNC_BUFFER
 from app.security.crypto import decrypt
 
@@ -88,12 +88,13 @@ class MigrationJobRunner:
 
             folders = graph_client.list_mail_folders(mapping.exo_upn)
             paths = build_folder_paths(folders)
+            imap_paths = build_imap_paths(folders, delimiter)
             for folder in folders:
                 if self._is_cancelled(db, job):
                     raise JobCancelledError()
 
                 graph_path = paths[folder.id]
-                imap_path = build_imap_path(graph_path, folder.well_known_name, delimiter)
+                imap_path = imap_paths[folder.id]
                 folder_map = get_or_create_folder_map(db, mapping.id, folder.id, graph_path, imap_path, folder.well_known_name)
                 if not folder_map.created and not job.dry_run:
                     importer.ensure_folder(imap_path)
