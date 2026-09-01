@@ -191,9 +191,15 @@ def _to_event(raw: dict) -> GraphEvent:
         for a in raw.get("attendees", [])
         if (a.get("emailAddress") or {}).get("address")
     ]
+    # Microsoft Graph can legitimately return iCalUId: null (seen on older
+    # events / items migrated in from elsewhere) even though id is always
+    # present -- confirmed against a live tenant, where this crashed the
+    # migration_item NOT NULL constraint and produced a CalDAV URL literally
+    # ending in "/None.ics". Fall back to the always-present Graph id so
+    # dedup and the CalDAV filename always have a real, stable value.
     return GraphEvent(
         id=raw["id"],
-        ics_uid=raw["iCalUId"],
+        ics_uid=raw.get("iCalUId") or raw["id"],
         last_modified_date_time=parse_graph_datetime(raw["lastModifiedDateTime"]),
         subject=raw.get("subject") or "",
         start=_parse_event_dt(raw["start"]["dateTime"]),

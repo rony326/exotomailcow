@@ -248,6 +248,40 @@ def test_list_events_requests_utc_and_applies_modified_since_filter(monkeypatch)
     assert events[0].start.tzinfo is not None
 
 
+def test_list_events_falls_back_to_graph_id_when_ical_uid_is_null(monkeypatch):
+    # Regression test: a real tenant returned iCalUId: null for an old
+    # event, which crashed the migration_item NOT NULL constraint and
+    # produced a CalDAV URL ending in "/None.ics" (event.ics_uid was used
+    # unguarded as both the dedup key and the CalDAV filename).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "evt-no-uid",
+                        "iCalUId": None,
+                        "lastModifiedDateTime": "2020-07-18T06:48:18.237166Z",
+                        "subject": "Altes Ereignis",
+                        "start": {"dateTime": "2020-07-18T10:00:00.0000000", "timeZone": "UTC"},
+                        "end": {"dateTime": "2020-07-18T11:00:00.0000000", "timeZone": "UTC"},
+                        "isAllDay": False,
+                        "location": None,
+                        "body": {"content": ""},
+                        "organizer": {"emailAddress": {"address": "leiter@church.org"}},
+                        "attendees": [],
+                        "recurrence": None,
+                    }
+                ]
+            },
+        )
+
+    client = _client(handler, monkeypatch)
+    events = list(client.list_events("user-1", "cal-1"))
+
+    assert events[0].ics_uid == "evt-no-uid"
+
+
 def test_list_contacts_maps_fields(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
