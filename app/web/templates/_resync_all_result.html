@@ -1,13 +1,13 @@
-<p>{{ jobs|length }} Resync-Job(s) gestartet.</p>
-<ul>
+<p class="ok">{{ jobs|length }} Resync-Job(s) gestartet.</p>
+<ul class="plain">
 {% for job in jobs %}
   <li><a href="/jobs/{{ job.id }}">Job #{{ job.id }} (Mapping {{ job.mapping_id }})</a></li>
 {% endfor %}
 </ul>
 {% if skipped %}
 <div class="resync-skipped">
-  <p>{{ skipped|length }} Mapping(s) übersprungen:</p>
-  <ul>
+  <p class="muted">{{ skipped|length }} Mapping(s) übersprungen:</p>
+  <ul class="plain">
     {% for mapping_id, reason in skipped %}
     <li>Mapping {{ mapping_id }}: {{ reason }}</li>
     {% endfor %}

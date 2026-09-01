@@ -1,13 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Azure AD Setup</h1>
-<form hx-post="/setup" hx-target="this" hx-swap="outerHTML">
-  <label>Tenant ID <input type="text" name="tenant_id" value="{{ config.tenant_id or '' }}" required></label>
-  <label>Client ID <input type="text" name="client_id" value="{{ config.client_id or '' }}" required></label>
-  <label>Client Secret <input type="password" name="client_secret" required></label>
-  <button type="submit">Speichern</button>
-</form>
-<button hx-post="/setup/test-connection" hx-target="#test-result" hx-swap="innerHTML">Verbindung testen</button>
-<div id="test-result"></div>
-{% if test_result == "saved" %}<p>Gespeichert.</p>{% endif %}
+<div>
+  <h1>Azure AD Setup</h1>
+  <p class="page-intro">Zugangsdaten für den App-Only-Zugriff auf Microsoft Graph. Nach dem Speichern kannst du die Verbindung testen, bevor du Postfächer anlegst.</p>
+</div>
+
+<div class="card">
+  <form hx-post="/setup" hx-target="this" hx-swap="outerHTML">
+    <label>Tenant ID <input type="text" name="tenant_id" value="{{ config.tenant_id or '' }}" required></label>
+    <label>Client ID <input type="text" name="client_id" value="{{ config.client_id or '' }}" required></label>
+    <label>Client Secret <input type="password" name="client_secret" required></label>
+    <button type="submit">Speichern</button>
+  </form>
+  <hr class="section-divider">
+  <button class="btn-secondary" hx-post="/setup/test-connection" hx-target="#test-result" hx-swap="innerHTML">Verbindung testen</button>
+  <div id="test-result"></div>
+  {% if test_result == "saved" %}<p class="ok">Gespeichert.</p>{% endif %}
+</div>
 {% endblock %}

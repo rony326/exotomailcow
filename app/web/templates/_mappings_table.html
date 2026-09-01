@@ -9,9 +9,9 @@
       <td>{{ mapping.mailcow_address }}</td>
       <td>{{ mapping.last_synced_at or "–" }}</td>
       <td>
-        <button hx-delete="/mappings/{{ mapping.id }}" hx-target="#mappings-table" hx-swap="outerHTML">Löschen</button>
+        <button class="btn-secondary" hx-delete="/mappings/{{ mapping.id }}" hx-target="#mappings-table" hx-swap="outerHTML">Löschen</button>
         {% if mapping.last_synced_at %}
-        <button hx-post="/mappings/{{ mapping.id }}/resync" hx-target="#resync-result-{{ mapping.id }}" hx-swap="innerHTML">Resync</button>
+        <button class="btn-secondary" hx-post="/mappings/{{ mapping.id }}/resync" hx-target="#resync-result-{{ mapping.id }}" hx-swap="innerHTML">Resync</button>
         {% endif %}
         <span id="resync-result-{{ mapping.id }}"></span>
       </td>
@@ -19,12 +19,12 @@
     {% endfor %}
   </tbody>
 </table>
-{% if csv_error %}<p class="csv-error">{{ csv_error }}</p>{% endif %}
-{% if imported_count is defined %}<p>{{ imported_count }} Mapping(s) importiert.</p>{% endif %}
+{% if csv_error %}<p class="error">{{ csv_error }}</p>{% endif %}
+{% if imported_count is defined %}<p class="ok">{{ imported_count }} Mapping(s) importiert.</p>{% endif %}
 {% if skipped_rows %}
 <div class="csv-skipped-rows">
-  <p>{{ skipped_rows|length }} Zeile(n) übersprungen:</p>
-  <ul>
+  <p class="muted">{{ skipped_rows|length }} Zeile(n) übersprungen:</p>
+  <ul class="muted">
     {% for row_number, reason in skipped_rows %}
     <li>Zeile {{ row_number }}: {{ reason }}</li>
     {% endfor %}

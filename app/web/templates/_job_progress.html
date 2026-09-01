@@ -1,17 +1,17 @@
 {% if job.status in ("pending", "running") %}
-<div id="job-{{ job.id }}" hx-get="/jobs/{{ job.id }}" hx-trigger="every 2s" hx-swap="outerHTML">
+<div id="job-{{ job.id }}" class="job-box" hx-get="/jobs/{{ job.id }}" hx-trigger="every 2s" hx-swap="outerHTML">
 {% else %}
-<div id="job-{{ job.id }}">
+<div id="job-{{ job.id }}" class="job-box">
 {% endif %}
-  <p>Status: {{ job.status }}</p>
-  <p>
+  <p>Status: <strong>{{ job.status }}</strong></p>
+  <p class="muted">
     Neu: {{ job.count_created }} |
     Aktualisiert: {{ job.count_updated }} |
     Übersprungen: {{ job.count_skipped }} |
     Fehlgeschlagen: {{ job.count_failed }}
   </p>
   {% if job.status in ("pending", "running") %}
-  <button hx-post="/jobs/{{ job.id }}/cancel" hx-target="#job-{{ job.id }}" hx-swap="outerHTML">Abbrechen</button>
+  <button class="btn-secondary" hx-post="/jobs/{{ job.id }}/cancel" hx-target="#job-{{ job.id }}" hx-swap="outerHTML">Abbrechen</button>
   {% endif %}
   {% if job.status in ("completed", "failed", "cancelled") %}
   <a href="/jobs/{{ job.id }}/report.csv">Bericht (CSV)</a> |
