@@ -196,23 +196,23 @@ class MigrationJobRunner:
             job.started_at = datetime.now(timezone.utc)
             db.commit()
 
-            modified_since = None
-            if job.job_type == JobType.RESYNC.value and mapping.last_synced_at is not None:
-                modified_since = mapping.last_synced_at - RESYNC_BUFFER
-                if job.mail_since_date is None:
-                    job.mail_since_date = modified_since
-                    db.commit()
-
-            graph_client = self._graph_client_factory(tenant_config)
-            target = MailcowTarget(
-                address=mapping.mailcow_address,
-                app_password=decrypt(mapping.app_password_encrypted),
-                imap_host=self._imap_host,
-                imap_port=self._imap_port,
-                dav_base_url=self._dav_base_url,
-            )
-
             try:
+                modified_since = None
+                if job.job_type == JobType.RESYNC.value and mapping.last_synced_at is not None:
+                    modified_since = mapping.last_synced_at - RESYNC_BUFFER
+                    if job.mail_since_date is None:
+                        job.mail_since_date = modified_since
+                        db.commit()
+
+                graph_client = self._graph_client_factory(tenant_config)
+                target = MailcowTarget(
+                    address=mapping.mailcow_address,
+                    app_password=decrypt(mapping.app_password_encrypted),
+                    imap_host=self._imap_host,
+                    imap_port=self._imap_port,
+                    dav_base_url=self._dav_base_url,
+                )
+
                 if job.migrate_mail:
                     self._migrate_mail(db, job, mapping, graph_client, target)
                 if job.migrate_calendar:

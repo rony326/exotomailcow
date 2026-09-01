@@ -674,6 +674,46 @@ def test_run_marks_job_failed_on_unexpected_exception():
     assert reloaded.finished_at is not None
 
 
+def test_run_marks_job_failed_when_graph_client_factory_raises_before_dispatch():
+    # Regression test for the status-transition bug: job/mapping/tenant_config
+    # loading, resync-date derivation, graph_client_factory(...), and
+    # MailcowTarget(..., decrypt(...)) construction all happen BEFORE the
+    # three _migrate_* dispatch calls. If any of that setup raises (e.g. an
+    # auth/token failure constructing the real GraphClient, or a corrupted
+    # app-password ciphertext), the job must still be marked FAILED with
+    # finished_at set -- not left stuck at RUNNING forever.
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping, job = _mapping_and_job(db, status=JobStatus.PENDING.value)
+    job.migrate_mail, job.migrate_calendar, job.migrate_contacts = True, False, False
+    db.commit()
+    job_id = job.id
+
+    def _broken_graph_client_factory(tenant_config):
+        raise RuntimeError("token acquisition failed")
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=_broken_graph_client_factory,
+        mail_importer_factory=FakeMailImporter,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        runner.run(job_id)
+
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    assert reloaded.status == JobStatus.FAILED.value
+    assert reloaded.finished_at is not None
+
+
 def test_run_leaves_status_cancelled_when_job_was_cancelled_mid_run():
     session_factory = _make_session_factory()
     db = session_factory()
