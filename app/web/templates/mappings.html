@@ -7,7 +7,19 @@
 </form>
 
 <form hx-post="/mappings" hx-target="#mappings-table" hx-swap="outerHTML">
+  {% if graph_mailboxes %}
+  <label>EXO-UPN
+    <select name="exo_upn" required>
+      <option value="" disabled selected>Postfach wählen…</option>
+      {% for mailbox in graph_mailboxes %}
+      <option value="{{ mailbox.user_principal_name }}">{{ mailbox.display_name }} ({{ mailbox.user_principal_name }})</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% else %}
   <input type="text" name="exo_upn" placeholder="EXO-UPN" required>
+  {% if graph_error %}<p class="graph-error">{{ graph_error }}</p>{% endif %}
+  {% endif %}
   <input type="text" name="mailcow_address" placeholder="Mailcow-Adresse" required>
   <input type="password" name="app_password" placeholder="App-Passwort" required>
   <button type="submit">Hinzufügen</button>
@@ -37,4 +49,17 @@
   <button type="submit">Migration starten</button>
 </form>
 <div id="jobs-started-container"></div>
+
+<h2>Resync</h2>
+<form hx-post="/mappings/resync-all" hx-target="#resync-all-container" hx-swap="innerHTML">
+  <button type="submit">Resync alle</button>
+</form>
+<div id="resync-all-container"></div>
+
+<h2>Admin</h2>
+<form hx-post="/admin/purge-secrets" hx-target="#purge-result-container" hx-swap="innerHTML"
+      hx-confirm="Wirklich alle Zugangsdaten löschen? Dies kann nicht rückgängig gemacht werden.">
+  <button type="submit">Alle Zugangsdaten löschen</button>
+</form>
+<div id="purge-result-container"></div>
 {% endblock %}

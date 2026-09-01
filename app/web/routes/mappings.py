@@ -1,20 +1,40 @@
 import csv
 import io
+import logging
 
 from fastapi import APIRouter, Depends, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.db.models import MailboxMapping
+from app.db.models import MailboxMapping, TenantConfig
 from app.db.session import get_db
+from app.graph.client import GraphClient
 from app.security.auth import require_admin
-from app.security.crypto import encrypt
+from app.security.crypto import decrypt, encrypt
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/web/templates")
+logger = logging.getLogger(__name__)
 
 REQUIRED_CSV_COLUMNS = ["exo_upn", "mailcow_address", "app_password"]
+
+
+def _fetch_graph_mailboxes(db: Session) -> tuple[list, str | None]:
+    """Fetch the live EXO mailbox directory for the mapping form's dropdown
+    (spec §10.2). Returns (mailboxes, error) -- mailboxes is [] and error is
+    a user-facing message whenever Graph/TenantConfig isn't available, so
+    the caller can fall back to a free-text input instead of a 500.
+    """
+    config = db.query(TenantConfig).one_or_none()
+    if config is None or not (config.tenant_id and config.client_id and config.client_secret_encrypted):
+        return [], None
+    try:
+        client = GraphClient(config.tenant_id, config.client_id, decrypt(config.client_secret_encrypted))
+        return list(client.list_mailboxes()), None
+    except Exception:
+        logger.exception("Failed to load EXO mailbox directory for the mapping form")
+        return [], "Postfach-Verzeichnis konnte nicht von Graph geladen werden. Bitte manuell eingeben."
 
 
 @router.get("/mappings", response_class=HTMLResponse)
@@ -23,7 +43,12 @@ def list_mappings(request: Request, q: str = "", db: Session = Depends(get_db), 
     if q:
         query = query.filter(MailboxMapping.exo_upn.contains(q))
     mappings = query.order_by(MailboxMapping.created_at).all()
-    return templates.TemplateResponse(request, "mappings.html", {"mappings": mappings, "q": q})
+    graph_mailboxes, graph_error = _fetch_graph_mailboxes(db)
+    return templates.TemplateResponse(
+        request,
+        "mappings.html",
+        {"mappings": mappings, "q": q, "graph_mailboxes": graph_mailboxes, "graph_error": graph_error},
+    )
 
 
 @router.post("/mappings", response_class=HTMLResponse)

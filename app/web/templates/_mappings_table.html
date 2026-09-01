@@ -10,6 +10,10 @@
       <td>{{ mapping.last_synced_at or "–" }}</td>
       <td>
         <button hx-delete="/mappings/{{ mapping.id }}" hx-target="#mappings-table" hx-swap="outerHTML">Löschen</button>
+        {% if mapping.last_synced_at %}
+        <button hx-post="/mappings/{{ mapping.id }}/resync" hx-target="#resync-result-{{ mapping.id }}" hx-swap="innerHTML">Resync</button>
+        {% endif %}
+        <span id="resync-result-{{ mapping.id }}"></span>
       </td>
     </tr>
     {% endfor %}

@@ -34,7 +34,7 @@ def resync_one(
 def resync_all(
     request: Request, db: Session = Depends(get_db), scheduler=Depends(get_scheduler), _: str = Depends(require_admin)
 ):
-    jobs = create_resync_jobs_for_all(db)
+    jobs, skipped = create_resync_jobs_for_all(db)
     for job in jobs:
         scheduler.submit(job.id)
-    return templates.TemplateResponse(request, "_resync_all_result.html", {"jobs": jobs})
+    return templates.TemplateResponse(request, "_resync_all_result.html", {"jobs": jobs, "skipped": skipped})
