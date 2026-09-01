@@ -1,12 +1,14 @@
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from app.db.models import Base, ItemCategory, JobStatus, JobType, MailboxMapping, MigrationJob
+from app.db.models import Base, ItemCategory, JobStatus, JobType, MailboxMapping, MigrationJob, TenantConfig
 from app.graph.models import GraphCalendar, GraphContact, GraphEvent, GraphFolder, GraphMessageRef
 from app.importers.base import MailcowTarget
 from app.jobs.runner import JobCancelledError, MigrationJobRunner
+from app.security.crypto import encrypt
 
 
 def _session() -> Session:
@@ -16,7 +18,10 @@ def _session() -> Session:
 
 
 def _mapping_and_job(db: Session, status: str = JobStatus.RUNNING.value) -> tuple[MailboxMapping, MigrationJob]:
-    mapping = MailboxMapping(exo_upn="user@church.org", mailcow_address="user@mailcow.local", app_password_encrypted="enc")
+    mapping = MailboxMapping(
+        exo_upn="user@church.org", mailcow_address="user@mailcow.local",
+        app_password_encrypted=encrypt("app-password-plaintext"),
+    )
     db.add(mapping)
     db.commit()
     job = MigrationJob(mapping_id=mapping.id, job_type=JobType.INITIAL.value, status=status, dry_run=False)
@@ -525,3 +530,180 @@ def test_migrate_contacts_marks_failed_after_max_retries(monkeypatch):
     item = get_item(db, mapping.id, ItemCategory.CONTACTS.value, "c1")
     assert item.status == "failed"
     assert "CardDAV down" in item.error_message
+
+
+def _make_session_factory():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine)
+
+
+def test_run_completes_mail_only_job_and_updates_last_synced_at():
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping, job = _mapping_and_job(db, status=JobStatus.PENDING.value)
+    job.migrate_mail, job.migrate_calendar, job.migrate_contacts = True, False, False
+    db.commit()
+    job_id = job.id
+
+    folders = [GraphFolder(id="inbox", display_name="Inbox", parent_id=None, well_known_name="inbox", child_folder_count=0)]
+    graph_client = FakeGraphClient(folders, {"inbox": []}, {})
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=lambda tc: graph_client,
+        mail_importer_factory=FakeMailImporter,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+    runner.run(job_id)
+
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    db.refresh(mapping)
+    assert reloaded.status == JobStatus.COMPLETED.value
+    assert reloaded.finished_at is not None
+    assert mapping.last_synced_at == reloaded.started_at
+
+
+def test_run_dry_run_does_not_update_last_synced_at():
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping, job = _mapping_and_job(db, status=JobStatus.PENDING.value)
+    job.migrate_mail, job.migrate_calendar, job.migrate_contacts = True, False, False
+    job.dry_run = True
+    db.commit()
+    job_id = job.id
+
+    folders = [GraphFolder(id="inbox", display_name="Inbox", parent_id=None, well_known_name="inbox", child_folder_count=0)]
+    graph_client = FakeGraphClient(folders, {"inbox": []}, {})
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=lambda tc: graph_client,
+        mail_importer_factory=FakeMailImporter,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+    runner.run(job_id)
+
+    db.expire_all()
+    db.refresh(mapping)
+    assert mapping.last_synced_at is None
+
+
+def test_run_resync_job_auto_derives_mail_since_date():
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping = MailboxMapping(
+        exo_upn="a@b", mailcow_address="a@c", app_password_encrypted=encrypt("app-password-plaintext"),
+        last_synced_at=datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    db.add(mapping)
+    db.commit()
+    job = MigrationJob(mapping_id=mapping.id, job_type=JobType.RESYNC.value, status=JobStatus.PENDING.value,
+                        migrate_mail=True, migrate_calendar=False, migrate_contacts=False)
+    db.add(job)
+    db.commit()
+    job_id = job.id
+    # Capture the pre-run value: run() overwrites mapping.last_synced_at on
+    # successful non-dry-run completion, so it must not be re-read afterward
+    # to compute the expected derived mail_since_date.
+    original_last_synced_at = mapping.last_synced_at
+
+    folders = [GraphFolder(id="inbox", display_name="Inbox", parent_id=None, well_known_name="inbox", child_folder_count=0)]
+    graph_client = FakeGraphClient(folders, {"inbox": []}, {})
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=lambda tc: graph_client,
+        mail_importer_factory=FakeMailImporter,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+    runner.run(job_id)
+
+    from app.jobs.resync import RESYNC_BUFFER
+
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    assert reloaded.mail_since_date == original_last_synced_at - RESYNC_BUFFER
+
+
+class BrokenGraphClient:
+    def list_mail_folders(self, user_id):
+        raise RuntimeError("Graph unavailable")
+
+
+def test_run_marks_job_failed_on_unexpected_exception():
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping, job = _mapping_and_job(db, status=JobStatus.PENDING.value)
+    job.migrate_mail, job.migrate_calendar, job.migrate_contacts = True, False, False
+    db.commit()
+    job_id = job.id
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=lambda tc: BrokenGraphClient(),
+        mail_importer_factory=FakeMailImporter,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        runner.run(job_id)
+
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    assert reloaded.status == JobStatus.FAILED.value
+    assert reloaded.finished_at is not None
+
+
+def test_run_leaves_status_cancelled_when_job_was_cancelled_mid_run():
+    session_factory = _make_session_factory()
+    db = session_factory()
+    db.add(TenantConfig(admin_user="a", admin_password_hash="h"))
+    mapping, job = _mapping_and_job(db, status=JobStatus.PENDING.value)
+    job.migrate_mail, job.migrate_calendar, job.migrate_contacts = True, False, False
+    db.commit()
+    job_id = job.id
+
+    folders = [GraphFolder(id="inbox", display_name="Inbox", parent_id=None, well_known_name="inbox", child_folder_count=0)]
+    graph_client = FakeGraphClient(folders, {}, {})
+
+    class CancellingImporter(FakeMailImporter):
+        def connect(self, target):
+            db.query(MigrationJob).filter_by(id=job_id).update({"status": JobStatus.CANCELLED.value})
+            db.commit()
+            return "."
+
+    runner = MigrationJobRunner(
+        db_session_factory=session_factory,
+        graph_client_factory=lambda tc: graph_client,
+        mail_importer_factory=CancellingImporter,
+        calendar_importer_factory=lambda: None,
+        contact_importer_factory=lambda: None,
+        imap_host="mail.example.org",
+        dav_base_url="https://mail.example.org",
+    )
+    runner.run(job_id)
+
+    db.expire_all()
+    reloaded = db.get(MigrationJob, job_id)
+    assert reloaded.status == JobStatus.CANCELLED.value
+    assert reloaded.finished_at is not None

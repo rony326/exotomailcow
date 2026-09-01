@@ -1,15 +1,18 @@
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
 from app.conversion.ics import graph_event_to_ics
 from app.conversion.vcard import graph_contact_to_vcard
-from app.db.models import ItemCategory, JobStatus, MailboxMapping, MigrationJob, TenantConfig
+from app.db.models import ItemCategory, JobStatus, JobType, MailboxMapping, MigrationJob, TenantConfig
 from app.db.repositories import get_item, get_or_create_folder_map, mark_folder_created, needs_import, record_failure, record_success
 from app.graph.client import GraphClient
 from app.importers.base import CalendarImporter, ContactImporter, MailcowTarget, MailImporter
 from app.importers.folder_mapping import build_folder_paths, build_imap_path
+from app.jobs.resync import RESYNC_BUFFER
+from app.security.crypto import decrypt
 
 MAX_ITEM_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 2
@@ -181,3 +184,51 @@ class MigrationJobRunner:
                         time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
         db.commit()
+
+    def run(self, job_id: int) -> None:
+        db = self._db_session_factory()
+        try:
+            job = db.get(MigrationJob, job_id)
+            mapping = db.get(MailboxMapping, job.mapping_id)
+            tenant_config = db.query(TenantConfig).one()
+
+            job.status = JobStatus.RUNNING.value
+            job.started_at = datetime.now(timezone.utc)
+            db.commit()
+
+            modified_since = None
+            if job.job_type == JobType.RESYNC.value and mapping.last_synced_at is not None:
+                modified_since = mapping.last_synced_at - RESYNC_BUFFER
+                if job.mail_since_date is None:
+                    job.mail_since_date = modified_since
+                    db.commit()
+
+            graph_client = self._graph_client_factory(tenant_config)
+            target = MailcowTarget(
+                address=mapping.mailcow_address,
+                app_password=decrypt(mapping.app_password_encrypted),
+                imap_host=self._imap_host,
+                imap_port=self._imap_port,
+                dav_base_url=self._dav_base_url,
+            )
+
+            try:
+                if job.migrate_mail:
+                    self._migrate_mail(db, job, mapping, graph_client, target)
+                if job.migrate_calendar:
+                    self._migrate_calendar(db, job, mapping, graph_client, target, modified_since)
+                if job.migrate_contacts:
+                    self._migrate_contacts(db, job, mapping, graph_client, target, modified_since)
+                job.status = JobStatus.COMPLETED.value
+                if not job.dry_run:
+                    mapping.last_synced_at = job.started_at
+            except JobCancelledError:
+                pass
+            except Exception:
+                job.status = JobStatus.FAILED.value
+                raise
+            finally:
+                job.finished_at = datetime.now(timezone.utc)
+                db.commit()
+        finally:
+            db.close()
