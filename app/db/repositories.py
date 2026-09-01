@@ -68,3 +68,34 @@ def record_failure(db: Session, mapping_id: int, category: str, external_id: str
         item.status = ItemStatus.FAILED.value
     item.error_message = error_message
     db.commit()
+
+
+def get_or_create_folder_map(
+    db: Session,
+    mapping_id: int,
+    graph_folder_id: str,
+    graph_path: str,
+    imap_mailbox_name: str,
+    well_known_type: str | None,
+) -> MailFolderMap:
+    existing = (
+        db.query(MailFolderMap).filter_by(mapping_id=mapping_id, graph_folder_id=graph_folder_id).one_or_none()
+    )
+    if existing is not None:
+        return existing
+    entry = MailFolderMap(
+        mapping_id=mapping_id,
+        graph_folder_id=graph_folder_id,
+        graph_path=graph_path,
+        imap_mailbox_name=imap_mailbox_name,
+        well_known_type=well_known_type,
+        created=False,
+    )
+    db.add(entry)
+    db.commit()
+    return entry
+
+
+def mark_folder_created(db: Session, folder_map: MailFolderMap) -> None:
+    folder_map.created = True
+    db.commit()

@@ -4,7 +4,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.models import Base, ItemStatus, MailboxMapping
-from app.db.repositories import get_item, needs_import, record_failure, record_success
+from app.db.repositories import (
+    get_item,
+    get_or_create_folder_map,
+    mark_folder_created,
+    needs_import,
+    record_failure,
+    record_success,
+)
 
 
 def _session() -> Session:
@@ -105,3 +112,25 @@ def test_record_success_does_not_wipe_source_modified_at_when_omitted():
     item = get_item(db, mapping_id, "calendar", "evt-1")
     assert item.source_modified_at is not None
     assert item.source_modified_at.replace(tzinfo=timezone.utc) == original_ts
+
+
+def test_get_or_create_folder_map_is_idempotent():
+    db = _session()
+    mapping_id = _mapping(db)
+
+    first = get_or_create_folder_map(db, mapping_id, "graph-1", "Projekte", "Projekte", None)
+    second = get_or_create_folder_map(db, mapping_id, "graph-1", "Projekte", "Projekte", None)
+
+    assert first.id == second.id
+    assert first.created is False
+
+
+def test_mark_folder_created_persists():
+    db = _session()
+    mapping_id = _mapping(db)
+    folder_map = get_or_create_folder_map(db, mapping_id, "graph-1", "Projekte", "Projekte", None)
+
+    mark_folder_created(db, folder_map)
+
+    reloaded = get_or_create_folder_map(db, mapping_id, "graph-1", "Projekte", "Projekte", None)
+    assert reloaded.created is True
