@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Postfach-Mappings</h1>
+<form hx-get="/mappings" hx-target="body" hx-push-url="true">
+  <input type="text" name="q" placeholder="Suche nach EXO-UPN" value="{{ q }}">
+  <button type="submit">Suchen</button>
+</form>
+
+<form hx-post="/mappings" hx-target="#mappings-table" hx-swap="outerHTML">
+  <input type="text" name="exo_upn" placeholder="EXO-UPN" required>
+  <input type="text" name="mailcow_address" placeholder="Mailcow-Adresse" required>
+  <input type="password" name="app_password" placeholder="App-Passwort" required>
+  <button type="submit">Hinzufügen</button>
+</form>
+
+<form hx-post="/mappings/csv-import" hx-target="#mappings-table" hx-swap="outerHTML" hx-encoding="multipart/form-data">
+  <input type="file" name="file" accept=".csv" required>
+  <button type="submit">CSV importieren</button>
+</form>
+
+{% include "_mappings_table.html" %}
+{% endblock %}
