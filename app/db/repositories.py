@@ -19,10 +19,12 @@ def needs_import(item: MigrationItem | None, source_modified_at: datetime | None
     if item.status == ItemStatus.FAILED.value:
         return True
     if source_modified_at is not None and item.source_modified_at is not None:
-        # SQLite doesn't preserve timezone info, so ensure consistent comparison
+        # SQLite doesn't preserve timezone info, so a value read back from the DB
+        # comes back naive. record_success normalizes any aware timestamp to UTC
+        # before storing it, so labeling a naive DB value as UTC here is correct
+        # (not just assumed) -- it just restores the tzinfo that SQLite dropped.
         db_ts = item.source_modified_at
         if db_ts.tzinfo is None and source_modified_at.tzinfo is not None:
-            # Assume DB datetime is UTC if naive
             db_ts = db_ts.replace(tzinfo=timezone.utc)
         return source_modified_at > db_ts
     return False
@@ -42,7 +44,15 @@ def record_success(
         db.add(item)
     item.status = ItemStatus.DONE.value
     item.target_ref = target_ref
-    item.source_modified_at = source_modified_at
+    if source_modified_at is not None:
+        # Normalize to UTC at write time: SQLite/SQLAlchemy's plain DateTime column
+        # doesn't preserve timezone info on round-trip (it keeps the naive wall-clock
+        # digits, not the UTC-converted instant). Converting here guarantees the DB
+        # always holds a UTC-equivalent value, so needs_import's naive-to-UTC labeling
+        # on read is correct rather than assumed.
+        if source_modified_at.tzinfo is not None:
+            source_modified_at = source_modified_at.astimezone(timezone.utc)
+        item.source_modified_at = source_modified_at
     item.error_message = None
     db.commit()
 

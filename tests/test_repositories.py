@@ -65,3 +65,43 @@ def test_record_success_upserts_existing_item():
     assert item.status == ItemStatus.DONE.value
     assert item.target_ref == "42"
     assert item.error_message is None
+
+
+def test_record_success_normalizes_non_utc_timestamp_to_utc():
+    # 10:00 in UTC+2 is 08:00 UTC. SQLite's plain DateTime column drops tzinfo on
+    # round-trip and preserves the naive wall-clock digits rather than converting to
+    # UTC first -- so if record_success stored the value as-is, a naive read-back
+    # would be mislabeled as 10:00 UTC instead of the true 08:00 UTC instant.
+    db = _session()
+    mapping_id = _mapping(db)
+    plus_two = timezone(timedelta(hours=2))
+    local_ts = datetime(2026, 1, 1, 10, 0, tzinfo=plus_two)
+    expected_utc = datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc)
+
+    record_success(db, mapping_id, "calendar", "evt-1", target_ref="href-1", source_modified_at=local_ts)
+
+    item = get_item(db, mapping_id, "calendar", "evt-1")
+    stored = item.source_modified_at
+    assert stored.replace(tzinfo=timezone.utc) == expected_utc
+
+    # And needs_import must compare against the correct UTC instant: a check using
+    # the true UTC-equivalent timestamp should see it as "not newer" (no reimport),
+    # while a check using the wrong (unconverted) 10:00-UTC interpretation would
+    # incorrectly report source_modified_at as still-older.
+    assert needs_import(item, expected_utc) is False
+    assert needs_import(item, expected_utc + timedelta(minutes=1)) is True
+
+
+def test_record_success_does_not_wipe_source_modified_at_when_omitted():
+    db = _session()
+    mapping_id = _mapping(db)
+    original_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    record_success(db, mapping_id, "calendar", "evt-1", target_ref="href-1", source_modified_at=original_ts)
+
+    # Re-recording success without passing source_modified_at (e.g. a caller that
+    # doesn't track modification times) must not wipe the previously stored value.
+    record_success(db, mapping_id, "calendar", "evt-1", target_ref="href-1")
+
+    item = get_item(db, mapping_id, "calendar", "evt-1")
+    assert item.source_modified_at is not None
+    assert item.source_modified_at.replace(tzinfo=timezone.utc) == original_ts
