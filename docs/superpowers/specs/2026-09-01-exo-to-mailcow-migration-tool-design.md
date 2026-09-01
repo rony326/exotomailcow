@@ -21,7 +21,8 @@ Job-Runner mit begrenzter Parallelität statt rein sequenziell.
 - Kein automatisches Anlegen der Ziel-Postfächer in Mailcow — müssen
   vorher existieren.
 - Keine Echtzeit-Sync/Coexistence-Phase — Einmal-Migrationslauf, aber
-  wiederholbar/resumable für Nachläufe.
+  wiederholbar/resumable für Nachläufe (siehe Abschnitt 6a, Resync nach
+  DNS-Umstellung).
 - Kein EAS-Adapter (Begründung siehe Abschnitt 8).
 
 ## 3. Architektur-Überblick
@@ -91,14 +92,22 @@ tenant_config (Singleton-Zeile)
   admin_user, admin_password_hash, created_at
 
 mailbox_mapping
-  id, exo_upn, mailcow_address, app_password_encrypted, created_at
+  id, exo_upn, mailcow_address, app_password_encrypted, created_at,
+  last_synced_at nullable      -- Watermark: started_at des letzten
+                                -- erfolgreich abgeschlossenen Jobs dieser
+                                -- Mapping-Zeile, Basis für den nächsten Resync
 
 migration_job
   id, mapping_id → mailbox_mapping,
+  job_type          (initial/resync),
   status            (pending/running/completed/failed/cancelled),
   migrate_mail bool, migrate_calendar bool, migrate_contacts bool,
-  mail_since_date   (nullable, Zeitraum-Filter),
+  mail_since_date   (nullable, manueller Zeitraum-Filter; bei job_type=resync
+                     automatisch aus mailbox_mapping.last_synced_at
+                     abgeleitet, falls nicht manuell überschrieben),
   dry_run bool,
+  count_created int default 0, count_updated int default 0,
+  count_skipped int default 0, count_failed int default 0,
   created_at, started_at, finished_at
 
 migration_item        -- Idempotenz-Kern
@@ -108,6 +117,9 @@ migration_item        -- Idempotenz-Kern
   category          (mail/calendar/contacts),
   external_id       (Graph message/event/contact-ID),
   content_hash      (Fallback, falls Graph-ID sich ändert),
+  source_modified_at (nullable — Graph lastModifiedDateTime zum Zeitpunkt
+                      des Imports; nur für calendar/contacts gepflegt,
+                      Basis für Änderungserkennung bei Resync),
   status            (done/skipped/failed),
   target_ref        (IMAP UID / CalDAV href / CardDAV href),
   error_message,
@@ -137,9 +149,17 @@ class GraphClient:
                        since: datetime | None = None) -> Iterator[GraphMessageRef]: ...
     def get_message_raw(self, user_id: str, message_id: str) -> bytes:     # $value MIME
     def list_calendars(self, user_id: str) -> list[GraphCalendar]: ...
-    def list_events(self, user_id: str, calendar_id: str) -> Iterator[GraphEvent]: ...
-    def list_contacts(self, user_id: str) -> Iterator[GraphContact]: ...
+    def list_events(self, user_id: str, calendar_id: str,
+                     modified_since: datetime | None = None) -> Iterator[GraphEvent]: ...
+    def list_contacts(self, user_id: str,
+                       modified_since: datetime | None = None) -> Iterator[GraphContact]: ...
 ```
+
+`modified_since` wird als `$filter=lastModifiedDateTime ge {ts}` an
+Graph durchgereicht (von Graph für Events/Contacts unterstützt) — bei
+einem Resync werden dadurch nur neue/geänderte Termine und Kontakte
+überhaupt erst abgerufen, statt jedes Mal den kompletten Bestand zu
+laden und lokal zu vergleichen.
 
 ### Importer-Interfaces (`app/importers/base.py`, als `Protocol`)
 
@@ -172,15 +192,56 @@ class MigrationJobRunner:
     def run(self, job_id: int) -> None:
         # lädt Job + Mapping, entschlüsselt Secrets (nur im Thread-lokalen Scope),
         # für jede aktivierte Kategorie: migrate_mail() / migrate_calendar() / migrate_contacts()
-        # pro Item: migration_item.status == 'done'? → skip; sonst migrieren + Zeile schreiben
-        # Fehler pro Item: Retry mit Backoff, nach N Versuchen 'failed', Job läuft weiter
+        # pro Item: migration_item.status == 'done' (und bei calendar/contacts
+        #   lastModifiedDateTime unverändert)? → skip (count_skipped++)
+        # sonst: importieren/aktualisieren, migration_item schreiben,
+        #   count_created++ (neu) bzw. count_updated++ (Status war schon 'done',
+        #   aber lastModifiedDateTime neuer)
+        # Fehler pro Item: Retry mit Backoff, nach N Versuchen 'failed'
+        #   (count_failed++), Job läuft weiter
+        # bei erfolgreichem Abschluss (status='completed'):
+        #   mailbox_mapping.last_synced_at = job.started_at
 ```
 
 `scheduler.py`: `ThreadPoolExecutor(max_workers=CONCURRENCY)` (ENV,
 Default 4). Beim FastAPI-Startup werden alle `migration_job` mit
 `status = running` auf `pending` zurückgesetzt und der Queue erneut
 zugeführt (Absturz-Resume). Bereits `done`-markierte `migration_item`-
-Zeilen werden dabei übersprungen.
+Zeilen (mit unverändertem `source_modified_at` bei calendar/contacts)
+werden dabei übersprungen; `failed`-Zeilen werden erneut versucht.
+
+## 6a. Resync nach DNS-Umstellung
+
+Nach der initialen Migration bleibt EXO in der Regel noch bis zur
+DNS-Umstellung (MX/Autodiscover → Mailcow) aktiv nutzbar — in dieser
+Zeit können neue Mails eintreffen oder Termine/Kontakte geändert werden.
+Der Resync holt diese Differenz nach, ohne bereits Migriertes erneut
+komplett zu verarbeiten.
+
+- **Trigger:** "Resync"-Button pro Mapping-Zeile (nur aktiv, wenn
+  `last_synced_at IS NOT NULL`, also mindestens eine erfolgreiche
+  Migration vorliegt) sowie ein "Resync alle"-Batch-Button auf der
+  Mapping-Übersicht, der für jede Mapping-Zeile mit gesetztem
+  `last_synced_at` einen eigenen `migration_job` mit `job_type=resync`
+  anlegt.
+- **Mail:** `mail_since_date` wird automatisch auf
+  `mailbox_mapping.last_synced_at` minus 15 Minuten Sicherheitspuffer
+  (Uhrzeit-Drift zwischen Graph und lokalem Server) gesetzt, sofern der
+  Nutzer im Job-Optionen-Dialog keinen abweichenden Wert einträgt. Nur
+  neue Nachrichten werden importiert (`external_id` noch nicht in
+  `migration_item`) — Flag-Änderungen (z.B. nachträglich gelesen) an
+  bereits migrierten Mails werden **nicht** nachgezogen, das bleibt
+  bewusst außerhalb des Funktionsumfangs.
+- **Kalender/Kontakte:** Graph-Abfrage nutzt `modified_since` (siehe
+  GraphClient oben) mit demselben Sicherheitspuffer. Für jedes
+  zurückgegebene Item: existiert noch kein `migration_item` → neuer
+  Import (`count_created`); existiert bereits eines mit älterem
+  `source_modified_at` → Re-Import per PUT auf denselben `target_ref`
+  (Href), `source_modified_at`/`updated_at` aktualisiert
+  (`count_updated`); ansonsten (Puffer-Overlap ohne echte Änderung) →
+  `count_skipped`.
+- **Abschlussbericht** unterscheidet dadurch für Resync-Jobs explizit
+  neu/aktualisiert/unverändert/fehlgeschlagen (siehe Abschnitt 10).
 
 ## 6. Ordner-Mapping-Logik (Mail)
 
@@ -252,8 +313,14 @@ den Quell-Zugriff bereits vollständig ab. Wird im README dokumentiert.
    Postfach/Kategorie (Ordner X/Y, Nachricht N/M) via HTMX-Polling
    gegen `migration_job`/`migration_item`, Abbrechen-Button (setzt
    `status = cancelled`, Worker-Thread prüft das Flag zwischen Items).
-5. **Abschlussbericht:** pro Postfach Anzahl migriert/übersprungen/
-   fehlgeschlagen, Fehlerliste mit Klartext-Grund, Download als CSV/JSON.
+5. **Abschlussbericht:** pro Postfach Anzahl neu importiert/aktualisiert
+   (nur bei Resync-Jobs relevant)/übersprungen/fehlgeschlagen (direkt aus
+   `migration_job.count_*`), Fehlerliste mit Klartext-Grund, Download als
+   CSV/JSON.
+6. **Resync (nach DNS-Umstellung):** pro Mapping-Zeile ein
+   "Resync"-Button (sobald einmal erfolgreich migriert), plus
+   "Resync alle" als Batch-Aktion auf der Mapping-Übersicht — siehe
+   Abschnitt 6a.
 
 ## 11. Deployment
 
@@ -275,4 +342,7 @@ Schema), vollständige ENV-Variablen-Liste, EAS-Begründung (Abschnitt 9).
 - Integrationstests gegen ein einzelnes Test-Postfach (EXO-Quelle +
   Mailcow-Ziel), manuell markiert (kein CI-Zwang, da echte Zugangsdaten
   nötig): Mail-Rundlauf inkl. verschachtelter Ordner, Kalender-Rundlauf
-  inkl. Serientermin, Kontakte-Rundlauf, Resume nach simuliertem Absturz.
+  inkl. Serientermin, Kontakte-Rundlauf, Resume nach simuliertem Absturz,
+  Resync-Rundlauf (initiale Migration → Termin in EXO verschieben/neuen
+  Kontakt anlegen/neue Mail senden → Resync → nur die Differenz landet
+  im Ziel, unverändertes wird übersprungen).
