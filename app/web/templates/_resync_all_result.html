@@ -4,3 +4,13 @@
   <li><a href="/jobs/{{ job.id }}">Job #{{ job.id }} (Mapping {{ job.mapping_id }})</a></li>
 {% endfor %}
 </ul>
+{% if skipped %}
+<div class="resync-skipped">
+  <p>{{ skipped|length }} Mapping(s) übersprungen:</p>
+  <ul>
+    {% for mapping_id, reason in skipped %}
+    <li>Mapping {{ mapping_id }}: {{ reason }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

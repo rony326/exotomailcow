@@ -118,6 +118,26 @@ def test_resync_all_only_submits_for_synced_mappings():
     assert len(fake_scheduler.submitted) == 1
 
 
+def test_resync_all_skips_mapping_with_active_job():
+    # Regression test for finding #4 (final whole-branch review).
+    app, db, fake_scheduler = _app_and_db()
+    synced = MailboxMapping(
+        exo_upn="a@b", mailcow_address="a@c", app_password_encrypted="enc",
+        last_synced_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    db.add(synced)
+    db.commit()
+    db.add(MigrationJob(mapping_id=synced.id, status="pending"))
+    db.commit()
+
+    client = TestClient(app)
+    response = client.post("/mappings/resync-all")
+
+    assert response.status_code == 200
+    assert fake_scheduler.submitted == []
+    assert db.query(MigrationJob).filter_by(mapping_id=synced.id).count() == 1
+
+
 def test_purge_secrets_clears_secrets_but_keeps_history():
     app, db, _ = _app_and_db()
     from app.security.crypto import encrypt

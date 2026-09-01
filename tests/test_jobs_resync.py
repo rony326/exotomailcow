@@ -40,6 +40,26 @@ def test_create_resync_job_raises_without_prior_sync():
         create_resync_job(db, mapping.id)
 
 
+def test_create_resync_job_rejects_mapping_with_active_job():
+    # Regression test for finding #4 (final whole-branch review): IMAP
+    # APPEND is not idempotent, so two overlapping jobs for the same
+    # mapping would duplicate messages in the target mailbox.
+    from app.db.models import JobStatus, JobType, MigrationJob
+
+    db = _session()
+    mapping = MailboxMapping(
+        exo_upn="a@b", mailcow_address="a@c", app_password_encrypted="enc",
+        last_synced_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+    )
+    db.add(mapping)
+    db.commit()
+    db.add(MigrationJob(mapping_id=mapping.id, job_type=JobType.RESYNC.value, status=JobStatus.PENDING.value))
+    db.commit()
+
+    with pytest.raises(ValueError):
+        create_resync_job(db, mapping.id)
+
+
 def test_create_resync_jobs_for_all_only_targets_synced_mappings():
     db = _session()
     synced = MailboxMapping(
@@ -50,7 +70,8 @@ def test_create_resync_jobs_for_all_only_targets_synced_mappings():
     db.add_all([synced, unsynced])
     db.commit()
 
-    jobs = create_resync_jobs_for_all(db)
+    jobs, skipped = create_resync_jobs_for_all(db)
 
     assert len(jobs) == 1
     assert jobs[0].mapping_id == synced.id
+    assert skipped == []

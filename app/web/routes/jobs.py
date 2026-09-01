@@ -6,6 +6,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db.models import JobType, MigrationJob
+from app.db.repositories import has_active_job_for_mapping
 from app.db.session import get_db
 from app.security.auth import require_admin
 from app.web.scheduler_dep import get_scheduler
@@ -29,7 +30,13 @@ def create_jobs(
 ):
     since = datetime.fromisoformat(mail_since_date) if mail_since_date else None
     jobs: list[MigrationJob] = []
+    skipped_mapping_ids: list[int] = []
+    seen_mapping_ids: set[int] = set()
     for mapping_id in mapping_ids:
+        if mapping_id in seen_mapping_ids or has_active_job_for_mapping(db, mapping_id):
+            skipped_mapping_ids.append(mapping_id)
+            continue
+        seen_mapping_ids.add(mapping_id)
         job = MigrationJob(
             mapping_id=mapping_id,
             job_type=JobType.INITIAL.value,
@@ -45,7 +52,9 @@ def create_jobs(
     for job in jobs:
         db.refresh(job)
         scheduler.submit(job.id)
-    return templates.TemplateResponse(request, "_jobs_started.html", {"jobs": jobs})
+    return templates.TemplateResponse(
+        request, "_jobs_started.html", {"jobs": jobs, "skipped_mapping_ids": skipped_mapping_ids}
+    )
 
 
 @router.get("/jobs/{job_id}", response_class=HTMLResponse)

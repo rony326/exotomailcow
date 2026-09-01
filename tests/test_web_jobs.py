@@ -85,6 +85,46 @@ def test_create_jobs_supports_batch_selection_of_multiple_mappings():
     assert sorted(fake_scheduler.submitted) == sorted(job.id for job in jobs)
 
 
+def test_create_jobs_skips_mapping_with_already_active_job():
+    # Regression test for finding #4 (final whole-branch review): two
+    # concurrent jobs for the same mapping would both independently see
+    # nothing done yet and both append the same messages via IMAP APPEND,
+    # which is not idempotent, duplicating messages in the target mailbox.
+    app, db, mapping, fake_scheduler = _app_and_db()
+    existing_job = MigrationJob(mapping_id=mapping.id, status=JobStatus.PENDING.value)
+    db.add(existing_job)
+    db.commit()
+
+    client = TestClient(app)
+    response = client.post(
+        "/jobs",
+        data={"mapping_ids": [str(mapping.id)], "migrate_mail": "true"},
+    )
+
+    assert response.status_code == 200
+    assert db.query(MigrationJob).filter_by(mapping_id=mapping.id).count() == 1
+    assert fake_scheduler.submitted == []
+
+
+def test_create_jobs_still_creates_for_mappings_without_active_job():
+    app, db, mapping, fake_scheduler = _app_and_db()
+    mapping2 = MailboxMapping(exo_upn="b@c", mailcow_address="b@d", app_password_encrypted="enc")
+    db.add(mapping2)
+    db.commit()
+
+    client = TestClient(app)
+    response = client.post(
+        "/jobs",
+        data={"mapping_ids": [str(mapping.id), str(mapping2.id)], "migrate_mail": "true"},
+    )
+
+    assert response.status_code == 200
+    jobs_created = db.query(MigrationJob).all()
+    assert len(jobs_created) == 2
+    assert {job.mapping_id for job in jobs_created} == {mapping.id, mapping2.id}
+    assert len(fake_scheduler.submitted) == 2
+
+
 def test_job_progress_endpoint_returns_current_counts():
     app, db, mapping, fake_scheduler = _app_and_db()
     job = MigrationJob(mapping_id=mapping.id, status=JobStatus.RUNNING.value, count_created=3, count_failed=1)

@@ -2,7 +2,25 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.db.models import ItemStatus, MailFolderMap, MigrationItem
+from app.db.models import ItemStatus, JobStatus, MailFolderMap, MigrationItem, MigrationJob
+
+_ACTIVE_JOB_STATUSES = (JobStatus.PENDING.value, JobStatus.RUNNING.value)
+
+
+def has_active_job_for_mapping(db: Session, mapping_id: int) -> bool:
+    """True if the given mapping already has a job in pending/running status.
+
+    Used to guard against creating two overlapping jobs for the same
+    mapping: since IMAP APPEND is not idempotent, two concurrent jobs for
+    the same mapping would both see nothing done yet (via needs_import) and
+    both append the same messages, duplicating them in the target mailbox.
+    """
+    return (
+        db.query(MigrationJob)
+        .filter(MigrationJob.mapping_id == mapping_id, MigrationJob.status.in_(_ACTIVE_JOB_STATUSES))
+        .first()
+        is not None
+    )
 
 
 def get_item(db: Session, mapping_id: int, category: str, external_id: str) -> MigrationItem | None:

@@ -3,4 +3,14 @@
   {% for job in jobs %}
     {% include "_job_progress.html" %}
   {% endfor %}
+  {% if skipped_mapping_ids %}
+  <div class="jobs-skipped">
+    <p>{{ skipped_mapping_ids|length }} Postfach/Postfächer übersprungen (bereits ein aktiver Job):</p>
+    <ul>
+      {% for mapping_id in skipped_mapping_ids %}
+      <li>Mapping {{ mapping_id }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
 </div>
