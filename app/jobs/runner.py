@@ -3,6 +3,8 @@ from collections.abc import Callable
 
 from sqlalchemy.orm import Session
 
+from app.conversion.ics import graph_event_to_ics
+from app.conversion.vcard import graph_contact_to_vcard
 from app.db.models import ItemCategory, JobStatus, MailboxMapping, MigrationJob, TenantConfig
 from app.db.repositories import get_item, get_or_create_folder_map, mark_folder_created, needs_import, record_failure, record_success
 from app.graph.client import GraphClient
@@ -98,6 +100,82 @@ class MigrationJobRunner:
                 except Exception as exc:
                     if attempt == MAX_ITEM_RETRIES:
                         record_failure(db, mapping.id, ItemCategory.MAIL.value, msg_ref.id, str(exc))
+                        job.count_failed += 1
+                    else:
+                        time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
+        db.commit()
+
+    def _migrate_calendar(self, db: Session, job: MigrationJob, mapping: MailboxMapping, graph_client, target: MailcowTarget, modified_since) -> None:
+        importer = self._calendar_importer_factory()
+        calendars = graph_client.list_calendars(mapping.exo_upn)
+        for calendar in calendars:
+            for event in graph_client.list_events(mapping.exo_upn, calendar.id, modified_since=modified_since):
+                if self._is_cancelled(db, job):
+                    raise JobCancelledError()
+                self._migrate_one_calendar_event(db, job, mapping, importer, target, event)
+
+    def _migrate_one_calendar_event(self, db, job, mapping, importer, target, event) -> None:
+        existing = get_item(db, mapping.id, ItemCategory.CALENDAR.value, event.ics_uid)
+        is_update = existing is not None
+
+        if not needs_import(existing, event.last_modified_date_time):
+            job.count_skipped += 1
+        elif job.dry_run:
+            job.count_updated += 1 if is_update else 0
+            job.count_created += 0 if is_update else 1
+        else:
+            for attempt in range(1, MAX_ITEM_RETRIES + 1):
+                try:
+                    ics_data = graph_event_to_ics(event)
+                    href = importer.put_event(target, event.ics_uid, ics_data)
+                    record_success(
+                        db, mapping.id, ItemCategory.CALENDAR.value, event.ics_uid,
+                        target_ref=href, source_modified_at=event.last_modified_date_time,
+                    )
+                    job.count_updated += 1 if is_update else 0
+                    job.count_created += 0 if is_update else 1
+                    break
+                except Exception as exc:
+                    if attempt == MAX_ITEM_RETRIES:
+                        record_failure(db, mapping.id, ItemCategory.CALENDAR.value, event.ics_uid, str(exc))
+                        job.count_failed += 1
+                    else:
+                        time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
+        db.commit()
+
+    def _migrate_contacts(self, db: Session, job: MigrationJob, mapping: MailboxMapping, graph_client, target: MailcowTarget, modified_since) -> None:
+        importer = self._contact_importer_factory()
+        for contact in graph_client.list_contacts(mapping.exo_upn, modified_since=modified_since):
+            if self._is_cancelled(db, job):
+                raise JobCancelledError()
+            self._migrate_one_contact(db, job, mapping, importer, target, contact)
+
+    def _migrate_one_contact(self, db, job, mapping, importer, target, contact) -> None:
+        existing = get_item(db, mapping.id, ItemCategory.CONTACTS.value, contact.id)
+        is_update = existing is not None
+
+        if not needs_import(existing, contact.last_modified_date_time):
+            job.count_skipped += 1
+        elif job.dry_run:
+            job.count_updated += 1 if is_update else 0
+            job.count_created += 0 if is_update else 1
+        else:
+            for attempt in range(1, MAX_ITEM_RETRIES + 1):
+                try:
+                    vcard_data = graph_contact_to_vcard(contact)
+                    href = importer.put_contact(target, contact.id, vcard_data)
+                    record_success(
+                        db, mapping.id, ItemCategory.CONTACTS.value, contact.id,
+                        target_ref=href, source_modified_at=contact.last_modified_date_time,
+                    )
+                    job.count_updated += 1 if is_update else 0
+                    job.count_created += 0 if is_update else 1
+                    break
+                except Exception as exc:
+                    if attempt == MAX_ITEM_RETRIES:
+                        record_failure(db, mapping.id, ItemCategory.CONTACTS.value, contact.id, str(exc))
                         job.count_failed += 1
                     else:
                         time.sleep(RETRY_BACKOFF_SECONDS * attempt)

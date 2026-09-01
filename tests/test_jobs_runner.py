@@ -1,10 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.db.models import Base, ItemCategory, JobStatus, JobType, MailboxMapping, MigrationJob
-from app.graph.models import GraphFolder, GraphMessageRef
+from app.graph.models import GraphCalendar, GraphContact, GraphEvent, GraphFolder, GraphMessageRef
 from app.importers.base import MailcowTarget
 from app.jobs.runner import JobCancelledError, MigrationJobRunner
 
@@ -287,3 +287,105 @@ def test_migrate_mail_raises_when_job_already_cancelled():
         runner._migrate_mail(db, job, mapping, graph_client, _TARGET)
 
     assert importer.appended == []
+
+
+class FakeCalendarGraphClient:
+    def __init__(self, calendars, events_by_calendar):
+        self._calendars = calendars
+        self._events_by_calendar = events_by_calendar
+
+    def list_calendars(self, user_id):
+        return self._calendars
+
+    def list_events(self, user_id, calendar_id, modified_since=None):
+        return iter(self._events_by_calendar.get(calendar_id, []))
+
+
+class FakeCalendarImporter:
+    def __init__(self):
+        self.put_calls: list[tuple] = []
+
+    def put_event(self, target, uid, ics_data):
+        self.put_calls.append((uid, ics_data))
+        return f"https://mail.example.org/SOGo/dav/x/Calendar/{uid}.ics"
+
+
+class FakeContactsGraphClient:
+    def __init__(self, contacts):
+        self._contacts = contacts
+
+    def list_contacts(self, user_id, modified_since=None):
+        return iter(self._contacts)
+
+
+class FakeContactImporter:
+    def __init__(self):
+        self.put_calls: list[tuple] = []
+
+    def put_contact(self, target, uid, vcard_data):
+        self.put_calls.append((uid, vcard_data))
+        return f"https://mail.example.org/SOGo/dav/x/Contacts/{uid}.vcf"
+
+
+def _event(uid="evt-1", modified=datetime(2026, 2, 1, tzinfo=timezone.utc)) -> GraphEvent:
+    return GraphEvent(
+        id="graph-evt-1", ics_uid=uid, last_modified_date_time=modified, subject="Sitzung",
+        start=modified, end=modified + timedelta(hours=1), is_all_day=False, location=None,
+        body_html=None, organizer_email=None, attendees=[],
+    )
+
+
+def test_migrate_calendar_creates_and_updates(monkeypatch):
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+    old_ts = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    graph_client = FakeCalendarGraphClient(
+        [GraphCalendar(id="cal-1", name="Kalender")], {"cal-1": [_event(modified=old_ts)]}
+    )
+    importer = FakeCalendarImporter()
+    runner = _runner()
+    runner._calendar_importer_factory = lambda: importer
+
+    runner._migrate_calendar(db, job, mapping, graph_client, _TARGET, modified_since=None)
+    assert job.count_created == 1
+    assert len(importer.put_calls) == 1
+
+    new_ts = old_ts + timedelta(hours=2)
+    graph_client2 = FakeCalendarGraphClient(
+        [GraphCalendar(id="cal-1", name="Kalender")], {"cal-1": [_event(modified=new_ts)]}
+    )
+    runner._migrate_calendar(db, job, mapping, graph_client2, _TARGET, modified_since=None)
+    assert job.count_updated == 1
+    assert len(importer.put_calls) == 2
+
+
+def test_migrate_calendar_skips_unchanged_event():
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+    ts = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    graph_client = FakeCalendarGraphClient([GraphCalendar(id="cal-1", name="Kalender")], {"cal-1": [_event(modified=ts)]})
+    importer = FakeCalendarImporter()
+    runner = _runner()
+    runner._calendar_importer_factory = lambda: importer
+
+    runner._migrate_calendar(db, job, mapping, graph_client, _TARGET, modified_since=None)
+    runner._migrate_calendar(db, job, mapping, graph_client, _TARGET, modified_since=None)
+
+    assert job.count_created == 1
+    assert job.count_skipped == 1
+    assert len(importer.put_calls) == 1
+
+
+def test_migrate_contacts_imports_new_contact():
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+    contact = GraphContact(id="c1", last_modified_date_time=datetime(2026, 1, 1, tzinfo=timezone.utc), display_name="Maria")
+    graph_client = FakeContactsGraphClient([contact])
+    importer = FakeContactImporter()
+    runner = _runner()
+    runner._contact_importer_factory = lambda: importer
+
+    runner._migrate_contacts(db, job, mapping, graph_client, _TARGET, modified_since=None)
+
+    assert job.count_created == 1
+    assert importer.put_calls[0][0] == "c1"
