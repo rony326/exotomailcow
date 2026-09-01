@@ -149,3 +149,70 @@ def test_get_message_raw_returns_bytes(monkeypatch):
     raw = client.get_message_raw("user-1", "m1")
 
     assert raw.startswith(b"From: a@b")
+
+
+def test_list_events_requests_utc_and_applies_modified_since_filter(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["prefer"] = request.headers.get("Prefer")
+        captured["filter"] = request.url.params.get("$filter")
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "evt1",
+                        "iCalUId": "uid-1",
+                        "lastModifiedDateTime": "2026-02-01T09:00:00Z",
+                        "subject": "Sitzung",
+                        "start": {"dateTime": "2026-02-05T10:00:00.0000000", "timeZone": "UTC"},
+                        "end": {"dateTime": "2026-02-05T11:00:00.0000000", "timeZone": "UTC"},
+                        "isAllDay": False,
+                        "location": {"displayName": "Saal"},
+                        "body": {"content": "Agenda"},
+                        "organizer": {"emailAddress": {"address": "leiter@church.org"}},
+                        "attendees": [{"emailAddress": {"address": "mitglied@church.org"}}],
+                        "recurrence": None,
+                    }
+                ]
+            },
+        )
+
+    client = _client(handler, monkeypatch)
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    events = list(client.list_events("user-1", "cal-1", modified_since=since))
+
+    assert captured["prefer"] == 'outlook.timezone="UTC"'
+    assert captured["filter"] == "lastModifiedDateTime ge 2026-01-01T00:00:00Z"
+    assert events[0].ics_uid == "uid-1"
+    assert events[0].organizer_email == "leiter@church.org"
+    assert events[0].attendees == ["mitglied@church.org"]
+    assert events[0].start.tzinfo is not None
+
+
+def test_list_contacts_maps_fields(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "c1",
+                        "lastModifiedDateTime": "2026-02-01T09:00:00Z",
+                        "displayName": "Maria Muster",
+                        "emailAddresses": [{"address": "maria@example.org"}],
+                        "businessPhones": ["+41 44 000 00 00"],
+                        "mobilePhone": "+41 79 000 00 00",
+                        "companyName": "Kirchgemeinde",
+                    }
+                ]
+            },
+        )
+
+    client = _client(handler, monkeypatch)
+    contacts = list(client.list_contacts("user-1"))
+
+    assert contacts[0].display_name == "Maria Muster"
+    assert contacts[0].email_addresses == ["maria@example.org"]
+    assert contacts[0].mobile_phone == "+41 79 000 00 00"

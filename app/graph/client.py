@@ -1,10 +1,10 @@
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 import msal
 
-from app.graph.models import GraphFolder, GraphMailbox, GraphMessageRef, parse_graph_datetime
+from app.graph.models import GraphCalendar, GraphContact, GraphEvent, GraphFolder, GraphMailbox, GraphMessageRef, parse_graph_datetime
 from app.graph.retry import graph_request
 
 _GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
@@ -118,3 +118,74 @@ class GraphClient:
             self._http, "GET", f"/users/{user_id}/messages/{message_id}/$value", headers=headers
         )
         return response.content
+
+    def list_calendars(self, user_id: str) -> list[GraphCalendar]:
+        return [
+            GraphCalendar(id=raw["id"], name=raw["name"])
+            for raw in self._paged_get(f"/users/{user_id}/calendars", params={"$select": "id,name", "$top": "999"})
+        ]
+
+    def list_events(
+        self, user_id: str, calendar_id: str, modified_since: datetime | None = None
+    ) -> Iterator[GraphEvent]:
+        params: dict[str, str] = {
+            "$select": "id,iCalUId,lastModifiedDateTime,subject,start,end,isAllDay,location,body,organizer,attendees,recurrence",
+            "$top": "50",
+        }
+        if modified_since is not None:
+            params["$filter"] = f"lastModifiedDateTime ge {modified_since.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        for raw in self._paged_get(
+            f"/users/{user_id}/calendars/{calendar_id}/events",
+            params=params,
+            extra_headers={"Prefer": 'outlook.timezone="UTC"'},
+        ):
+            yield _to_event(raw)
+
+    def list_contacts(self, user_id: str, modified_since: datetime | None = None) -> Iterator[GraphContact]:
+        params: dict[str, str] = {
+            "$select": "id,lastModifiedDateTime,displayName,emailAddresses,businessPhones,mobilePhone,companyName",
+            "$top": "50",
+        }
+        if modified_since is not None:
+            params["$filter"] = f"lastModifiedDateTime ge {modified_since.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        for raw in self._paged_get(f"/users/{user_id}/contacts", params=params):
+            yield _to_contact(raw)
+
+
+def _parse_event_dt(value: str) -> datetime:
+    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+
+
+def _to_event(raw: dict) -> GraphEvent:
+    organizer = (raw.get("organizer") or {}).get("emailAddress") or {}
+    attendees = [
+        (a.get("emailAddress") or {}).get("address")
+        for a in raw.get("attendees", [])
+        if (a.get("emailAddress") or {}).get("address")
+    ]
+    return GraphEvent(
+        id=raw["id"],
+        ics_uid=raw["iCalUId"],
+        last_modified_date_time=parse_graph_datetime(raw["lastModifiedDateTime"]),
+        subject=raw.get("subject") or "",
+        start=_parse_event_dt(raw["start"]["dateTime"]),
+        end=_parse_event_dt(raw["end"]["dateTime"]),
+        is_all_day=raw.get("isAllDay", False),
+        location=(raw.get("location") or {}).get("displayName"),
+        body_html=(raw.get("body") or {}).get("content"),
+        organizer_email=organizer.get("address"),
+        attendees=attendees,
+        recurrence=raw.get("recurrence"),
+    )
+
+
+def _to_contact(raw: dict) -> GraphContact:
+    return GraphContact(
+        id=raw["id"],
+        last_modified_date_time=parse_graph_datetime(raw["lastModifiedDateTime"]),
+        display_name=raw.get("displayName") or "",
+        email_addresses=[e["address"] for e in raw.get("emailAddresses", []) if e.get("address")],
+        business_phones=raw.get("businessPhones", []),
+        mobile_phone=raw.get("mobilePhone"),
+        company_name=raw.get("companyName"),
+    )
