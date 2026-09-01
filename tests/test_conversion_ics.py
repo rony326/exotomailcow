@@ -114,3 +114,24 @@ def test_graph_event_to_ics_includes_rrule_when_recurring():
     text = ics_bytes.decode("utf-8")
     assert "RRULE" in text
     assert "FREQ=DAILY" in text
+
+
+def test_all_day_event_emits_date_only_dtstart():
+    event = _sample_event()
+    event.is_all_day = True
+    event.start = datetime(2026, 2, 5, 0, 0, tzinfo=timezone.utc)
+    event.end = datetime(2026, 2, 6, 0, 0, tzinfo=timezone.utc)
+    ics_bytes = graph_event_to_ics(event)
+    text = ics_bytes.decode("utf-8")
+    assert "DTSTART;VALUE=DATE:20260205" in text
+    assert "DTEND;VALUE=DATE:20260206" in text
+    # Must not also emit a timed DTSTART for the same event.
+    assert "DTSTART:" not in text
+
+
+def test_non_all_day_event_still_emits_full_timestamp():
+    ics_bytes = graph_event_to_ics(_sample_event())
+    text = ics_bytes.decode("utf-8")
+    assert "DTSTART:20260205T100000Z" in text
+    assert "DTEND:20260205T110000Z" in text
+    assert "VALUE=DATE" not in text

@@ -80,8 +80,19 @@ def graph_event_to_ics(event: GraphEvent) -> bytes:
     vevent = Event()
     vevent.add("uid", event.ics_uid)
     vevent.add("summary", event.subject)
-    vevent.add("dtstart", event.start)
-    vevent.add("dtend", event.end)
+    if event.is_all_day:
+        # Emit date-only values (RFC 5545 VALUE=DATE) instead of a UTC
+        # timestamp, so the event renders on the correct calendar day
+        # rather than as a timed event. Graph is fetched with
+        # Prefer: outlook.timezone="UTC" (see app/graph/client.py), so for
+        # an all-day event created in a non-UTC timezone the UTC-shifted
+        # date used here can still be off by one day in edge cases -- a
+        # deeper timezone-aware fix is out of scope for this pass.
+        vevent.add("dtstart", event.start.date())
+        vevent.add("dtend", event.end.date())
+    else:
+        vevent.add("dtstart", event.start)
+        vevent.add("dtend", event.end)
     vevent.add("last-modified", event.last_modified_date_time)
     vevent.add("dtstamp", datetime.now(timezone.utc))
     if event.location:
