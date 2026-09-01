@@ -3858,6 +3858,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 from app.db.models import Base, TenantConfig
 from app.db.session import get_db
@@ -3866,7 +3867,7 @@ from app.web.routes import setup
 
 
 def _app_and_db():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     db = Session(engine)
     db.add(TenantConfig(admin_user="admin", admin_password_hash="unused"))
@@ -4104,6 +4105,7 @@ import io
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import Session
 
 from app.db.models import Base, MailboxMapping
@@ -4113,7 +4115,7 @@ from app.web.routes import mappings
 
 
 def _app_and_db():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     db = Session(engine)
 
@@ -4353,6 +4355,7 @@ git commit -m "feat: add mapping CRUD and CSV bulk import GUI"
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import Session
 
 from app.db.models import Base, JobStatus, MailboxMapping, MigrationJob
@@ -4375,7 +4378,7 @@ class FakeScheduler:
 
 
 def _app_and_db():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     db = Session(engine)
     mapping = MailboxMapping(exo_upn="a@b", mailcow_address="a@c", app_password_encrypted="enc")
@@ -4674,6 +4677,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import Session
 
 from app.db.models import Base, ItemStatus, MailboxMapping, MigrationItem, MigrationJob, TenantConfig
@@ -4692,7 +4696,7 @@ class FakeScheduler:
 
 
 def _app_and_db():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     db = Session(engine)
 
