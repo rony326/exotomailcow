@@ -389,3 +389,139 @@ def test_migrate_contacts_imports_new_contact():
 
     assert job.count_created == 1
     assert importer.put_calls[0][0] == "c1"
+
+
+def _contact(id="c1", modified=datetime(2026, 1, 1, tzinfo=timezone.utc), display_name="Maria") -> GraphContact:
+    return GraphContact(id=id, last_modified_date_time=modified, display_name=display_name)
+
+
+def test_migrate_contacts_updates_changed_contact_and_skips_unchanged():
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+    old_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    graph_client = FakeContactsGraphClient([_contact(modified=old_ts)])
+    importer = FakeContactImporter()
+    runner = _runner()
+    runner._contact_importer_factory = lambda: importer
+
+    runner._migrate_contacts(db, job, mapping, graph_client, _TARGET, modified_since=None)
+    assert job.count_created == 1
+    assert len(importer.put_calls) == 1
+
+    # Same timestamp again -> unchanged -> skipped, no re-import.
+    runner._migrate_contacts(db, job, mapping, graph_client, _TARGET, modified_since=None)
+    assert job.count_skipped == 1
+    assert len(importer.put_calls) == 1
+
+    # Newer timestamp -> update.
+    new_ts = old_ts + timedelta(hours=2)
+    graph_client2 = FakeContactsGraphClient([_contact(modified=new_ts)])
+    runner._migrate_contacts(db, job, mapping, graph_client2, _TARGET, modified_since=None)
+    assert job.count_updated == 1
+    assert len(importer.put_calls) == 2
+
+
+def test_migrate_calendar_dry_run_counts_without_writing():
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+    job.dry_run = True
+    old_ts = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    graph_client = FakeCalendarGraphClient(
+        [GraphCalendar(id="cal-1", name="Kalender")], {"cal-1": [_event(modified=old_ts)]}
+    )
+    importer = FakeCalendarImporter()
+    runner = _runner()
+    runner._calendar_importer_factory = lambda: importer
+
+    runner._migrate_calendar(db, job, mapping, graph_client, _TARGET, modified_since=None)
+
+    assert job.count_created == 1
+    assert importer.put_calls == []
+    from app.db.repositories import get_item
+
+    assert get_item(db, mapping.id, ItemCategory.CALENDAR.value, "evt-1") is None
+
+    # A second dry-run pass over the *same* unchanged event still counts as a
+    # create (no MigrationItem row was ever written), not a skip or update.
+    new_ts = old_ts + timedelta(hours=2)
+    graph_client2 = FakeCalendarGraphClient(
+        [GraphCalendar(id="cal-1", name="Kalender")], {"cal-1": [_event(modified=new_ts)]}
+    )
+    runner._migrate_calendar(db, job, mapping, graph_client2, _TARGET, modified_since=None)
+
+    assert job.count_created == 2
+    assert job.count_updated == 0
+    assert importer.put_calls == []
+
+
+def test_migrate_contacts_dry_run_counts_without_writing():
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+    job.dry_run = True
+    contact = _contact(modified=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    graph_client = FakeContactsGraphClient([contact])
+    importer = FakeContactImporter()
+    runner = _runner()
+    runner._contact_importer_factory = lambda: importer
+
+    runner._migrate_contacts(db, job, mapping, graph_client, _TARGET, modified_since=None)
+
+    assert job.count_created == 1
+    assert importer.put_calls == []
+    from app.db.repositories import get_item
+
+    assert get_item(db, mapping.id, ItemCategory.CONTACTS.value, "c1") is None
+
+
+def test_migrate_calendar_marks_failed_after_max_retries(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+    graph_client = FakeCalendarGraphClient(
+        [GraphCalendar(id="cal-1", name="Kalender")], {"cal-1": [_event()]}
+    )
+
+    class FailingCalendarImporter(FakeCalendarImporter):
+        def put_event(self, target, uid, ics_data):
+            raise RuntimeError("CalDAV down")
+
+    importer = FailingCalendarImporter()
+    runner = _runner()
+    runner._calendar_importer_factory = lambda: importer
+
+    # Must not raise/abort the job despite every attempt failing.
+    runner._migrate_calendar(db, job, mapping, graph_client, _TARGET, modified_since=None)
+
+    assert job.count_failed == 1
+    assert job.count_created == 0
+    from app.db.repositories import get_item
+
+    item = get_item(db, mapping.id, ItemCategory.CALENDAR.value, "evt-1")
+    assert item.status == "failed"
+    assert "CalDAV down" in item.error_message
+
+
+def test_migrate_contacts_marks_failed_after_max_retries(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+    graph_client = FakeContactsGraphClient([_contact()])
+
+    class FailingContactImporter(FakeContactImporter):
+        def put_contact(self, target, uid, vcard_data):
+            raise RuntimeError("CardDAV down")
+
+    importer = FailingContactImporter()
+    runner = _runner()
+    runner._contact_importer_factory = lambda: importer
+
+    # Must not raise/abort the job despite every attempt failing.
+    runner._migrate_contacts(db, job, mapping, graph_client, _TARGET, modified_since=None)
+
+    assert job.count_failed == 1
+    assert job.count_created == 0
+    from app.db.repositories import get_item
+
+    item = get_item(db, mapping.id, ItemCategory.CONTACTS.value, "c1")
+    assert item.status == "failed"
+    assert "CardDAV down" in item.error_message
