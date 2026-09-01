@@ -39,6 +39,46 @@ def test_relative_monthly_last_friday_no_end():
     assert "COUNT" not in rrule
 
 
+def test_weekly_recurrence_default_wkst_is_sunday():
+    recurrence = {
+        "pattern": {"type": "weekly", "interval": 2, "daysOfWeek": ["sunday", "wednesday"]},
+        "range": {"type": "noEnd"},
+    }
+    rrule = graph_recurrence_to_rrule(recurrence)
+    assert "WKST=SU" in rrule
+
+
+def test_weekly_recurrence_with_explicit_monday_wkst():
+    recurrence = {
+        "pattern": {
+            "type": "weekly",
+            "interval": 2,
+            "daysOfWeek": ["sunday", "wednesday"],
+            "firstDayOfWeek": "monday",
+        },
+        "range": {"type": "noEnd"},
+    }
+    rrule = graph_recurrence_to_rrule(recurrence)
+    assert "WKST=MO" in rrule
+
+
+def test_html_body_is_converted_to_plain_text_description():
+    event = _sample_event()
+    event.body_html = "<p>Hallo <b>allen</b>!</p>&amp; mehr"
+    ics_bytes = graph_event_to_ics(event)
+    text = ics_bytes.decode("utf-8")
+    description_line = next(line for line in text.splitlines() if line.startswith("DESCRIPTION"))
+    assert "<" not in description_line
+    assert ">" not in description_line
+    assert "Hallo allen!& mehr" in description_line
+
+
+def test_graph_event_to_ics_contains_dtstamp():
+    ics_bytes = graph_event_to_ics(_sample_event())
+    text = ics_bytes.decode("utf-8")
+    assert any(line.startswith("DTSTAMP:") for line in text.splitlines())
+
+
 def _sample_event(recurrence=None) -> GraphEvent:
     return GraphEvent(
         id="evt1",

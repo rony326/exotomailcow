@@ -1,6 +1,13 @@
+import html as html_lib
+import re
+from datetime import datetime, timezone
+
 from icalendar import Calendar, Event, vRecur
 
 from app.graph.models import GraphEvent
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
 
 _DAY_MAP = {
     "monday": "MO", "tuesday": "TU", "wednesday": "WE", "thursday": "TH",
@@ -46,6 +53,9 @@ def graph_recurrence_to_rrule(recurrence: dict) -> str:
 
     parts.append(f"INTERVAL={interval}")
 
+    wkst_day = pattern.get("firstDayOfWeek", "sunday")
+    parts.append(f"WKST={_DAY_MAP[wkst_day]}")
+
     range_type = rng["type"]
     if range_type == "endDate":
         end_date = rng["endDate"].replace("-", "")
@@ -54,6 +64,12 @@ def graph_recurrence_to_rrule(recurrence: dict) -> str:
         parts.append(f"COUNT={rng['numberOfOccurrences']}")
 
     return ";".join(parts)
+
+
+def _html_to_text(html: str) -> str:
+    stripped = _TAG_RE.sub("", html)
+    unescaped = html_lib.unescape(stripped)
+    return _WHITESPACE_RE.sub(" ", unescaped).strip()
 
 
 def graph_event_to_ics(event: GraphEvent) -> bytes:
@@ -67,10 +83,11 @@ def graph_event_to_ics(event: GraphEvent) -> bytes:
     vevent.add("dtstart", event.start)
     vevent.add("dtend", event.end)
     vevent.add("last-modified", event.last_modified_date_time)
+    vevent.add("dtstamp", datetime.now(timezone.utc))
     if event.location:
         vevent.add("location", event.location)
     if event.body_html:
-        vevent.add("description", event.body_html)
+        vevent.add("description", _html_to_text(event.body_html))
     if event.organizer_email:
         vevent.add("organizer", f"mailto:{event.organizer_email}")
     for attendee in event.attendees:
