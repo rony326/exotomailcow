@@ -19,4 +19,22 @@
 </form>
 
 {% include "_mappings_table.html" %}
+
+<h2>Migration starten</h2>
+<form hx-post="/jobs" hx-target="#jobs-started-container" hx-swap="outerHTML">
+  <label>Postfächer
+    <select name="mapping_ids" multiple required size="6">
+      {% for mapping in mappings %}
+      <option value="{{ mapping.id }}">{{ mapping.exo_upn }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label><input type="checkbox" name="migrate_mail" value="true" checked> Mail</label>
+  <label><input type="checkbox" name="migrate_calendar" value="true" checked> Kalender</label>
+  <label><input type="checkbox" name="migrate_contacts" value="true" checked> Kontakte</label>
+  <label>Mail seit (optional) <input type="date" name="mail_since_date"></label>
+  <label><input type="checkbox" name="dry_run" value="true"> Dry-Run (nur zählen)</label>
+  <button type="submit">Migration starten</button>
+</form>
+<div id="jobs-started-container"></div>
 {% endblock %}

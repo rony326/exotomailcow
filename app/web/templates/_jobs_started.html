@@ -1,0 +1,6 @@
+<div id="jobs-started-container">
+  <p>{{ jobs|length }} Migration(s) gestartet.</p>
+  {% for job in jobs %}
+    {% include "_job_progress.html" %}
+  {% endfor %}
+</div>
