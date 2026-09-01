@@ -50,6 +50,53 @@ def test_csv_import_creates_multiple_mappings():
     assert db.query(MailboxMapping).count() == 2
 
 
+def test_csv_import_missing_required_column_returns_error_without_importing():
+    app, db = _app_and_db()
+    client = TestClient(app)
+    # no "app_password" column
+    csv_content = "exo_upn,mailcow_address\na@x.org,a@mailcow.local\n"
+    response = client.post(
+        "/mappings/csv-import",
+        files={"file": ("mappings.csv", io.BytesIO(csv_content.encode()), "text/csv")},
+    )
+    assert response.status_code == 200
+    assert "app_password" in response.text
+    assert db.query(MailboxMapping).count() == 0
+
+
+def test_csv_import_skips_malformed_row_but_imports_good_row():
+    app, db = _app_and_db()
+    client = TestClient(app)
+    csv_content = (
+        "exo_upn,mailcow_address,app_password\n"
+        "good@x.org,good@mailcow.local,pw1\n"
+        "bad@x.org,bad@mailcow.local\n"  # missing app_password value
+    )
+    response = client.post(
+        "/mappings/csv-import",
+        files={"file": ("mappings.csv", io.BytesIO(csv_content.encode()), "text/csv")},
+    )
+    assert response.status_code == 200
+
+    mappings = db.query(MailboxMapping).all()
+    assert len(mappings) == 1
+    assert mappings[0].exo_upn == "good@x.org"
+
+    # the bad row is row 3 in the file (header is row 1, good row is row 2)
+    assert "3" in response.text
+
+
+def test_csv_import_non_utf8_file_returns_error_not_500():
+    app, db = _app_and_db()
+    client = TestClient(app)
+    response = client.post(
+        "/mappings/csv-import",
+        files={"file": ("mappings.csv", io.BytesIO(b"exo_upn,mailcow_address,app_password\n\xff\xfe\x00bad"), "text/csv")},
+    )
+    assert response.status_code == 200
+    assert db.query(MailboxMapping).count() == 0
+
+
 def test_delete_mapping_removes_row():
     app, db = _app_and_db()
     db.add(MailboxMapping(exo_upn="a@b", mailcow_address="a@c", app_password_encrypted="enc"))

@@ -15,4 +15,15 @@
     {% endfor %}
   </tbody>
 </table>
+{% if csv_error %}<p class="csv-error">{{ csv_error }}</p>{% endif %}
 {% if imported_count is defined %}<p>{{ imported_count }} Mapping(s) importiert.</p>{% endif %}
+{% if skipped_rows %}
+<div class="csv-skipped-rows">
+  <p>{{ skipped_rows|length }} Zeile(n) übersprungen:</p>
+  <ul>
+    {% for row_number, reason in skipped_rows %}
+    <li>Zeile {{ row_number }}: {{ reason }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
