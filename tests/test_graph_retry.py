@@ -50,3 +50,35 @@ def test_raises_after_max_retries(monkeypatch):
     client = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://graph.microsoft.com/v1.0")
     with pytest.raises(httpx.HTTPStatusError):
         graph_request(client, "GET", "/users")
+
+
+def test_client_error_message_includes_graph_error_code_and_message():
+    # Regression test: httpx's default raise_for_status() message
+    # ("Client error '400 Bad Request' for url '...'") tells an operator
+    # nothing about *why* -- Graph's actual diagnostic is in the JSON body.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "MailboxNotEnabledForRESTAPI",
+                    "message": "The mailbox is either inactive, soft-deleted, or is hosted on-premise.",
+                }
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://graph.microsoft.com/v1.0")
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        graph_request(client, "GET", "/users/nobody@example.org/mailFolders")
+
+    assert "MailboxNotEnabledForRESTAPI" in str(excinfo.value)
+    assert "hosted on-premise" in str(excinfo.value)
+
+
+def test_client_error_without_json_body_still_raises_cleanly():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, content=b"not json")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://graph.microsoft.com/v1.0")
+    with pytest.raises(httpx.HTTPStatusError):
+        graph_request(client, "GET", "/users")
