@@ -46,8 +46,10 @@ class FakeMailImporter:
         self.ensured_folders: list[str] = []
         self.appended: list[tuple] = []
         self.closed = False
+        self.connected = False
 
     def connect(self, target):
+        self.connected = True
         return "."
 
     def ensure_folder(self, imap_path):
@@ -178,6 +180,91 @@ def test_migrate_mail_dry_run_counts_without_writing():
     from app.db.repositories import get_item
 
     assert get_item(db, mapping.id, ItemCategory.MAIL.value, "m1") is None
+
+
+def test_migrate_mail_dry_run_does_not_create_folder_on_target_server():
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+    job.dry_run = True
+
+    folders = [GraphFolder(id="inbox", display_name="Inbox", parent_id=None, well_known_name="inbox", child_folder_count=0)]
+    messages = {
+        "inbox": [
+            GraphMessageRef(id="m1", received_date_time=datetime(2026, 1, 1, tzinfo=timezone.utc), is_read=True, is_flagged=False),
+        ]
+    }
+    graph_client = FakeGraphClient(folders, messages, {"m1": b"raw-bytes"})
+    importer = FakeMailImporter()
+
+    runner = _runner(mail_importer_factory=lambda: importer)
+    runner._migrate_mail(db, job, mapping, graph_client, _TARGET)
+
+    # Critical: dry-run must never issue the server-side CREATE.
+    assert importer.ensured_folders == []
+    # But connect() (read-only: login + delimiter detection) should still happen,
+    # so dry-run can still validate connectivity.
+    assert importer.connected is True
+    assert importer.closed is True
+    # Counting for the dry-run report still works without the folder existing.
+    assert job.count_created == 1
+
+
+def test_migrate_mail_retries_connect_and_succeeds(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+
+    folders = [GraphFolder(id="inbox", display_name="Inbox", parent_id=None, well_known_name="inbox", child_folder_count=0)]
+    messages = {
+        "inbox": [
+            GraphMessageRef(id="m1", received_date_time=datetime(2026, 1, 1, tzinfo=timezone.utc), is_read=True, is_flagged=False),
+        ]
+    }
+    graph_client = FakeGraphClient(folders, messages, {"m1": b"raw-bytes"})
+
+    class FlakyConnectImporter(FakeMailImporter):
+        def __init__(self):
+            super().__init__()
+            self.connect_attempts = 0
+
+        def connect(self, target):
+            self.connect_attempts += 1
+            if self.connect_attempts < 3:
+                raise RuntimeError("transient network blip")
+            self.connected = True
+            return "."
+
+    importer = FlakyConnectImporter()
+    runner = _runner(mail_importer_factory=lambda: importer)
+    runner._migrate_mail(db, job, mapping, graph_client, _TARGET)
+
+    assert importer.connect_attempts == 3
+    assert importer.appended[0][0] == "INBOX"
+    assert job.count_created == 1
+    assert importer.closed is True
+
+
+def test_migrate_mail_connect_exhausts_retries_and_still_closes(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    db = _session()
+    mapping, job = _mapping_and_job(db)
+
+    folders = [GraphFolder(id="inbox", display_name="Inbox", parent_id=None, well_known_name="inbox", child_folder_count=0)]
+    graph_client = FakeGraphClient(folders, {}, {})
+
+    class AlwaysFailingConnectImporter(FakeMailImporter):
+        def connect(self, target):
+            raise RuntimeError("IMAP server unreachable")
+
+    importer = AlwaysFailingConnectImporter()
+    runner = _runner(mail_importer_factory=lambda: importer)
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="IMAP server unreachable"):
+        runner._migrate_mail(db, job, mapping, graph_client, _TARGET)
+
+    assert importer.closed is True
 
 
 def test_migrate_mail_raises_when_job_already_cancelled():

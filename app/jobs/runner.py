@@ -44,8 +44,17 @@ class MigrationJobRunner:
 
     def _migrate_mail(self, db: Session, job: MigrationJob, mapping: MailboxMapping, graph_client, target: MailcowTarget) -> None:
         importer = self._mail_importer_factory()
-        delimiter = importer.connect(target)
         try:
+            delimiter = None
+            for attempt in range(1, MAX_ITEM_RETRIES + 1):
+                try:
+                    delimiter = importer.connect(target)
+                    break
+                except Exception:
+                    if attempt == MAX_ITEM_RETRIES:
+                        raise
+                    time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
             folders = graph_client.list_mail_folders(mapping.exo_upn)
             paths = build_folder_paths(folders)
             for folder in folders:
@@ -55,7 +64,7 @@ class MigrationJobRunner:
                 graph_path = paths[folder.id]
                 imap_path = build_imap_path(graph_path, folder.well_known_name, delimiter)
                 folder_map = get_or_create_folder_map(db, mapping.id, folder.id, graph_path, imap_path, folder.well_known_name)
-                if not folder_map.created:
+                if not folder_map.created and not job.dry_run:
                     importer.ensure_folder(imap_path)
                     mark_folder_created(db, folder_map)
 
