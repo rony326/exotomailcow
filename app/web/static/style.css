@@ -1,0 +1,7 @@
+body { font-family: sans-serif; margin: 2rem; }
+label { display: block; margin-bottom: 0.75rem; }
+input { display: block; width: 100%; max-width: 24rem; padding: 0.4rem; }
+.ok { color: #1a7f37; }
+.error { color: #b3261e; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }

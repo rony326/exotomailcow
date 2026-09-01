@@ -1,0 +1,5 @@
+{% if result == "ok" %}
+<p class="ok">Verbindung erfolgreich.</p>
+{% else %}
+<p class="error">Verbindung fehlgeschlagen: {{ error_detail }}</p>
+{% endif %}

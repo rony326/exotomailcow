@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Azure AD Setup</h1>
+<form hx-post="/setup" hx-target="this" hx-swap="outerHTML">
+  <label>Tenant ID <input type="text" name="tenant_id" value="{{ config.tenant_id or '' }}" required></label>
+  <label>Client ID <input type="text" name="client_id" value="{{ config.client_id or '' }}" required></label>
+  <label>Client Secret <input type="password" name="client_secret" required></label>
+  <button type="submit">Speichern</button>
+</form>
+<button hx-post="/setup/test-connection" hx-target="#test-result" hx-swap="innerHTML">Verbindung testen</button>
+<div id="test-result"></div>
+{% if test_result == "saved" %}<p>Gespeichert.</p>{% endif %}
+{% endblock %}
