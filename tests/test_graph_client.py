@@ -79,18 +79,42 @@ def test_list_mailboxes_escapes_search_quotes(monkeypatch):
     assert "O''Brien" in captured["filter"]
 
 
+def _well_known_folder_handler(user_id: str, ids_by_name: dict) -> callable:
+    """Serves GET /users/{user_id}/mailFolders/{name} for the 5 well-known
+    names, 404-ing for any name not present in ids_by_name (mirroring a
+    mailbox that doesn't have e.g. an Archive folder)."""
+
+    def handle(request: httpx.Request) -> httpx.Response | None:
+        prefix = f"/v1.0/users/{user_id}/mailFolders/"
+        path = request.url.path
+        if not path.startswith(prefix):
+            return None
+        name = path[len(prefix):]
+        if name not in GraphClient._WELL_KNOWN_FOLDER_NAMES:
+            return None
+        if name in ids_by_name:
+            return httpx.Response(200, json={"id": ids_by_name[name]})
+        return httpx.Response(404, json={"error": {"code": "ErrorItemNotFound", "message": "not found"}})
+
+    return handle
+
+
 def test_list_mail_folders_resolves_nested_children(monkeypatch):
+    well_known = _well_known_folder_handler("user-1", {"inbox": "inbox"})
+
     def handler(request: httpx.Request) -> httpx.Response:
+        well_known_response = well_known(request)
+        if well_known_response is not None:
+            return well_known_response
         path = request.url.path
         if path.endswith("/mailFolders"):
+            assert "wellKnownName" not in request.url.params.get("$select", "")
             return httpx.Response(
                 200,
                 json={
                     "value": [
-                        {"id": "inbox", "displayName": "Inbox", "parentFolderId": None,
-                         "wellKnownName": "inbox", "childFolderCount": 0},
-                        {"id": "root-custom", "displayName": "Projekte", "parentFolderId": None,
-                         "wellKnownName": None, "childFolderCount": 1},
+                        {"id": "inbox", "displayName": "Inbox", "parentFolderId": None, "childFolderCount": 0},
+                        {"id": "root-custom", "displayName": "Projekte", "parentFolderId": None, "childFolderCount": 1},
                     ]
                 },
             )
@@ -99,8 +123,7 @@ def test_list_mail_folders_resolves_nested_children(monkeypatch):
                 200,
                 json={
                     "value": [
-                        {"id": "child-1", "displayName": "2024", "parentFolderId": "root-custom",
-                         "wellKnownName": None, "childFolderCount": 0},
+                        {"id": "child-1", "displayName": "2024", "parentFolderId": "root-custom", "childFolderCount": 0},
                     ]
                 },
             )
@@ -112,6 +135,40 @@ def test_list_mail_folders_resolves_nested_children(monkeypatch):
     assert {f.id for f in folders} == {"inbox", "root-custom", "child-1"}
     child = next(f for f in folders if f.id == "child-1")
     assert child.parent_id == "root-custom"
+    inbox = next(f for f in folders if f.id == "inbox")
+    assert inbox.well_known_name == "inbox"
+    custom = next(f for f in folders if f.id == "root-custom")
+    assert custom.well_known_name is None
+
+
+def test_resolve_well_known_folder_ids_maps_ids_and_skips_missing_ones(monkeypatch):
+    # Mailbox has everything except Archive (a real, common case -- Archive
+    # is opt-in per mailbox).
+    well_known = _well_known_folder_handler(
+        "user-1",
+        {
+            "inbox": "graph-inbox-id",
+            "sentitems": "graph-sent-id",
+            "deleteditems": "graph-trash-id",
+            "drafts": "graph-drafts-id",
+        },
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = well_known(request)
+        if response is not None:
+            return response
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    client = _client(handler, monkeypatch)
+    ids = client._resolve_well_known_folder_ids("user-1")
+
+    assert ids == {
+        "graph-inbox-id": "inbox",
+        "graph-sent-id": "sentitems",
+        "graph-trash-id": "deleteditems",
+        "graph-drafts-id": "drafts",
+    }
 
 
 def test_list_messages_maps_flags_and_applies_since_filter(monkeypatch):

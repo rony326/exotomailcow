@@ -61,20 +61,48 @@ class GraphClient:
                 mail=raw.get("mail"),
             )
 
-    _FOLDER_SELECT = "id,displayName,parentFolderId,wellKnownName,childFolderCount"
+    # NOTE: 'wellKnownName' is NOT a real selectable property on the Graph
+    # mailFolder resource -- $select=...,wellKnownName raises a 400
+    # ("Parsing OData Select and Expand failed: Could not find a property
+    # named 'wellKnownName' on type 'microsoft.graph.mailFolder'"), confirmed
+    # against a live tenant. The only way to identify a well-known folder is
+    # to address it directly by name in the URL (GET /mailFolders/inbox etc.)
+    # and read back its real id -- see _resolve_well_known_folder_ids.
+    _FOLDER_SELECT = "id,displayName,parentFolderId,childFolderCount"
+    _WELL_KNOWN_FOLDER_NAMES = ("inbox", "sentitems", "deleteditems", "drafts", "archive")
+
+    def _resolve_well_known_folder_ids(self, user_id: str) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for name in self._WELL_KNOWN_FOLDER_NAMES:
+            headers = {"Authorization": f"Bearer {self._token()}"}
+            try:
+                response = graph_request(
+                    self._http,
+                    "GET",
+                    f"/users/{user_id}/mailFolders/{name}",
+                    headers=headers,
+                    params={"$select": "id"},
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    continue  # not every mailbox has every well-known folder (e.g. Archive)
+                raise
+            result[response.json()["id"]] = name
+        return result
 
     def list_mail_folders(self, user_id: str) -> list[GraphFolder]:
+        well_known_ids = self._resolve_well_known_folder_ids(user_id)
         top_level = list(
             self._paged_get(f"/users/{user_id}/mailFolders", params={"$select": self._FOLDER_SELECT, "$top": "999"})
         )
         folders: list[GraphFolder] = []
         for raw in top_level:
-            folders.append(self._to_folder(raw))
+            folders.append(self._to_folder(raw, well_known_ids))
             if raw.get("childFolderCount", 0) > 0:
-                folders.extend(self._list_child_folders(user_id, raw["id"]))
+                folders.extend(self._list_child_folders(user_id, raw["id"], well_known_ids))
         return folders
 
-    def _list_child_folders(self, user_id: str, parent_id: str) -> list[GraphFolder]:
+    def _list_child_folders(self, user_id: str, parent_id: str, well_known_ids: dict[str, str]) -> list[GraphFolder]:
         result: list[GraphFolder] = []
         children = list(
             self._paged_get(
@@ -83,18 +111,18 @@ class GraphClient:
             )
         )
         for raw in children:
-            result.append(self._to_folder(raw))
+            result.append(self._to_folder(raw, well_known_ids))
             if raw.get("childFolderCount", 0) > 0:
-                result.extend(self._list_child_folders(user_id, raw["id"]))
+                result.extend(self._list_child_folders(user_id, raw["id"], well_known_ids))
         return result
 
     @staticmethod
-    def _to_folder(raw: dict) -> GraphFolder:
+    def _to_folder(raw: dict, well_known_ids: dict[str, str]) -> GraphFolder:
         return GraphFolder(
             id=raw["id"],
             display_name=raw["displayName"],
             parent_id=raw.get("parentFolderId"),
-            well_known_name=raw.get("wellKnownName"),
+            well_known_name=well_known_ids.get(raw["id"]),
             child_folder_count=raw.get("childFolderCount", 0),
         )
 
